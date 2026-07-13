@@ -1,5 +1,5 @@
 git clone --recursive https://github.com/bspafford/Search-Engine
-cd external/uWebSockets/uSockets
+cd backend/external/uWebSockets/uSockets
 make
 cd ../../..
 cmake -S . -B build

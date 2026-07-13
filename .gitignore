@@ -1,1 +1,10 @@
 build/
+/backend/external/
+
+compile_commands.json
+
+# C/C++ build artifacts
+*.a
+*.o
+*.so
+*.dll
