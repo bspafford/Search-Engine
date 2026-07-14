@@ -2,13 +2,38 @@
 #include <App.h>
 #include <pqxx/pqxx>
 #include <sstream>
+#include <nlohmann/json.hpp>
+#include <ctemplate/template.h>
+#include <ctemplate/template.h>
+#include <ctemplate/template_dictionary.h>
+#include <ctemplate/template_enums.h>
 #include "../login.h"
 
-std::string ExecuteSQL(const std::string& query);
+nlohmann::json ExecuteSQL(const std::string& query);
 
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 
+void temp() {
+    std::string input = "server/example.tpl";
+
+    ctemplate::TemplateDictionary dict("example");
+    dict.SetValue("NAME", "John Smith");
+    int winnings = rand() % 100000;
+    dict.SetIntValue("VALUE", winnings);
+    dict.SetFormattedValue("TAXED_VALUE", "%.2f", winnings * 0.83);
+    
+    if (true) {
+        dict.ShowSection("IN_CA");
+    }
+
+    std::string output;
+    ctemplate::ExpandTemplate(input, ctemplate::DO_NOT_STRIP, &dict, &output);
+    std::cout << output;
+}
+
 int main() {
+    temp();
+    return 0;
     int port = 8080;
 
     uWS::App().get("/search", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
@@ -31,10 +56,10 @@ int main() {
     })
     .run();
     return 0;
+
 } 
 
-
-std::string ExecuteSQL(const std::string& query) {
+nlohmann::json ExecuteSQL(const std::string& query) {
     // start a transaction
     pqxx::work tx{cx};
 
@@ -45,8 +70,9 @@ std::string ExecuteSQL(const std::string& query) {
         // "SELECT * FROM siteData WHERE title LIKE $1", pattern)) {
     auto result = tx.exec("SELECT * FROM siteData WHERE title ILIKE $1", pqxx::params(pattern));
 
+    nlohmann::json json;
     for (auto row : result) {
-         output << "id: " << row["id"].c_str() << "\nurl: " << row["url"].c_str() << "\ntitle: " << row["title"].c_str() << "\ndescription: " << row["description"].c_str() << "\ncontentHash: " << row["contentHash"].c_str() << "\nlastVisited: " << row["lastVisited"].c_str() << "\n\n";
+         // output << "id: " << row["id"].c_str() << "\nurl: " << row["url"].c_str() << "\ntitle: " << row["title"].c_str() << "\ndescription: " << row["description"].c_str() << "\ncontentHash: " << row["contentHash"].c_str() << "\nlastVisited: " << row["lastVisited"].c_str() << "\n\n";
     }
 
     // Commit the transaction

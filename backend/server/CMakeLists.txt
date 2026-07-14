@@ -4,7 +4,8 @@ add_executable(server
 
 # linke to executable
 target_include_directories(server PRIVATE
-
+    ${PROJECT_SOURCE_DIR}/external/json/include
+    ${INSTALL_DIR}/include
 )
 
 target_link_libraries(server PRIVATE
@@ -13,4 +14,5 @@ target_link_libraries(server PRIVATE
     z
     pthread
     pqxx
+    ctemplate
 )

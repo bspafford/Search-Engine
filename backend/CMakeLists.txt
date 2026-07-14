@@ -14,6 +14,7 @@ add_custom_target(copy_compile_commands ALL
 )
 
 include(FetchContent)
+# include(ExternalProject)
 
 FetchContent_Declare(
     libpqxx
@@ -45,6 +46,23 @@ FetchContent_Declare(
     GIT_TAG curl-8_16_0
 )
 FetchContent_MakeAvailable(curl)
+
+# External Projects
+# ExternalProject_Add(
+    # ctemplate
+    # GIT_REPOSITORY https://github.com/olafvdspek/ctemplate.git
+    # GIT_TAG ctemplate-2.4
+
+    # BUILD_IN_SOURCE 1
+
+    # PATCH_COMMAND sh <SOURCE_DIR>/autogen.sh
+
+    # CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
+
+    # BUILD_COMMAND $(MAKE)
+    # INSTALL_COMMAND $(MAKE) install
+# )
+
 
 add_subdirectory(server)
 add_subdirectory(crawler)
