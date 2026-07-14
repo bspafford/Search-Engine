@@ -1,9 +1,10 @@
 #include <iostream>
 #include <App.h>
 #include <pqxx/pqxx>
+#include <sstream>
 #include "../login.h"
 
-void ExecuteSQL();
+std::string ExecuteSQL();
 
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 
@@ -15,9 +16,11 @@ int main() {
                     std::cout << "Received: " << data << "\n";
             }
         });
+
+        std::string str = ExecuteSQL();
         
-        res->writeHeader("Content-Type", "application/json");
-        res->end(R"({"results":["example result"]})");
+        res->writeHeader("Content-Type", "application/text");
+        res->end(str);
     })
     .listen(8080, [](auto *listenSocket) {
         if (listenSocket) {
@@ -29,18 +32,22 @@ int main() {
 } 
 
 
-void ExecuteSQL() {
+std::string ExecuteSQL() {
     // start a transaction
     pqxx::work tx{cx};
+
+    std::stringstream output;
 
     for (auto [id, url, title, description, contentHash, lastVisited] : tx.stream<long long, std::string_view, std::string_view, std::string_view, long long, std::string_view> (
         "SELECT * FROM siteData")) {
 
-         std::cout << "id: " << id << "\nurl: " << url << "\ntitle: " << title << "\ndescription: " << description << "\ncontentHash: " << contentHash << "\nlastVisited: " << lastVisited << "\n\n";
+         output << "id: " << id << "\nurl: " << url << "\ntitle: " << title << "\ndescription: " << description << "\ncontentHash: " << contentHash << "\nlastVisited: " << lastVisited << "\n\n";
     }
 
     // Commit the transaction
     std::cout << "Making changes definite\n";
     tx.commit();
     std::cout << "OK\n";
+
+    return output.str();
 }
