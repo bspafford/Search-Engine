@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <lexbor/core/base.h>
 #include <lexbor/dom/collection.h>
 #include <lexbor/dom/interface.h>
@@ -7,9 +8,12 @@
 #include <curl/curl.h>
 #include <lexbor/html/html.h>
 #include <lexbor/url/url.h>
-#include <unordered_map>
+#include <type_traits>
+#include <unordered_set>
 #include <queue>
 #include <chrono>
+#include <pqxx/pqxx>
+#include "../login.h"
 
 // HNSW (Hierarchical Navigable Small World)
 // Vector database
@@ -27,8 +31,39 @@ struct URLData {
     std::chrono::steady_clock::time_point lastVisited;
 };
 
-std::unordered_map<std::string, URLData> visited;
+struct Rule {
+    std::string path;
+    bool allow = false;
+
+    bool Matches(const std::string& path) {
+        return this->path == path; // temp, simple string matching
+    }
+};
+
+struct RobotInfo {
+    std::vector<Rule> rules;
+    std::chrono::steady_clock::time_point fetchedAt;
+    std::vector<std::string> sitemaps;
+
+    // returns ture if successful
+    bool FindRule(const std::string path) {
+        for (Rule& rule : rules) {
+            if (rule.Matches(path)) { // rule found
+                return rule.allow;
+            }
+        }
+
+        return true; // rule was not found, returning true by default
+    }
+};
+
+std::unordered_set<std::string> visited;
+std::unordered_map<std::string, RobotInfo> robotsTXT;
 std::queue<std::string> queue;
+pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
+std::string botName = "*";
+
+int GetHTML(const char* url, std::string* html, long* httpCode);
 
 static size_t write_data(char *contents, size_t size, size_t nmemb, void *userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
@@ -41,21 +76,146 @@ static lxb_status_t callback(const lxb_char_t *data, size_t len, void *ctx) {
     return LXB_STATUS_OK;
 }
 
-void VisitURL(long statusCode, std::string& url, std::string& title, std::string& description) {
+// returns base url
+// e.g. https://www.google.com/robots.txt would return "https://www.google.com" AND path == "/"
+std::string ExtractOrigin(const std::string& url, std::string& path) {
+    // Find "://"
+    std::size_t schemeEnd = url.find("://");
+    if (schemeEnd == std::string::npos)
+        throw std::runtime_error("Invalid URL");
+
+    // Find first '/' after the host
+    std::size_t pathStart = url.find('/', schemeEnd + 3);
+
+    if (pathStart == std::string::npos) {
+        path = "/";
+        return url;
+    } else {
+        path = url.substr(pathStart);
+        return url.substr(0, pathStart);
+    }
+}
+
+std::string_view trim(std::string_view s) {
+    while (!s.empty() && std::isspace(s.front()))
+        s.remove_prefix(1);
+
+    while (!s.empty() && std::isspace(s.back()))
+        s.remove_suffix(1);
+
+    size_t pos = s.find('#');
+    if (pos != std::string_view::npos)
+        s = s.substr(0, pos);
+
+    return s;
+}
+
+std::unordered_map<std::string, RobotInfo>::iterator ParseRobotsTXT(const std::string& origin, std::string_view robotsText) {
+    RobotInfo robotInfo;
+    robotInfo.fetchedAt = std::chrono::steady_clock::now();
+    auto [it, success] = robotsTXT.insert({ origin, robotInfo });
+
+    size_t start = 0;
+    bool active = false;
+    bool inUserAgentBlock = false;
+    while (start < robotsText.size()) {
+        size_t end = robotsText.find('\n', start);
+
+        if (end == std::string_view::npos)
+            end = robotsText.size();
+
+        std::string_view line = trim(robotsText.substr(start, end - start));
+
+        if (!line.empty()) {
+            // parse line
+            auto colon = line.find(':');
+            std::string_view key = trim(line.substr(0, colon));
+            std::string_view value = trim(line.substr(colon + 1));
+
+            if (key == "User-agent") {
+                // can have something like:
+                //      User-agent: *
+                //      User-agent: Yandex
+                // so right after its declaring another bot. meaning the program should realize that it needs to see: set bot, (dis)allow, set bot, for it to actually change bots
+                if (!inUserAgentBlock) {
+                    active = false;
+                    inUserAgentBlock = true;
+                }
+
+                if (value == botName)
+                    active = true;
+
+            } else if (key == "Sitemap") {
+                it->second.sitemaps.push_back(std::string(value));
+                inUserAgentBlock = false;
+            } else if (active) {
+                bool allow = key == "Allow";
+                it->second.rules.push_back({ std::string(value), allow });
+                inUserAgentBlock = false;
+            }
+        }
+
+        start = end + 1;
+    }
+
+    return it;
+}
+
+// Check to see if url is allowed to be crawled
+// Will also find, parse, and add to RobotsTXT map if not already in there
+bool CheckRobotsTXT(const std::string& url) {
+    std::string path;
+    std::string origin = ExtractOrigin(url, path);
+
+    // if origin already inside robotsTXT, then find path that fits to rule. If non, i guess allow
+    // if not already inside map, then go to origin + "/robots.txt", parse file, and add to map, then check
+    auto it = robotsTXT.find(origin);
+    if (it == robotsTXT.end()) { // wasn't found
+        // go to (origin) + "/robots.txt"
+        std::string output;
+        long httpCode;
+        GetHTML((origin + "/robots.txt").c_str(), &output, &httpCode);
+
+        // parse file
+        it = ParseRobotsTXT(origin, output);
+    }
+
+    bool allow;
+    return it->second.FindRule(path);
+}
+
+// whether or not to add this url based on robots.txt or if already visited
+bool ShouldVisit(const std::string& url) {
+    bool isAllowed = CheckRobotsTXT(url);
+    bool hasntVisited = visited.find(url) == visited.end();
+    return isAllowed && hasntVisited;
+}
+
+void ExecuteSQL(std::string& url, std::string& title, std::string& description, long contentHash) {
+    // start a transaction
+    pqxx::work tx{cx};
+
+    tx.exec(pqxx::prepped("insert_page"), pqxx::params(url, title, description, contentHash));
+
+    // Commit the transaction
+    std::cout << "Making changes definite\n";
+    tx.commit();
+    std::cout << "OK\n";
+}
+
+// may add url to search further
+// wont add if already searched through or isn't allowed to visit
+void AddURL(long statusCode, std::string& url, std::string& title, std::string& description) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
     // 5xx: retry later
     
-    if (visited.find(url) == visited.end()) { // if haven't already seen url
+    if (ShouldVisit(url)) { // if haven't already seen url
         printf("Visited: %s\n", url.c_str());
-        URLData urlData = {
-            title,
-            description,
-            0,
-            std::chrono::steady_clock::now()
-        };
-        visited.insert(std::pair(url, urlData));
+        if (statusCode < 300)
+            ExecuteSQL(url, title, description, 0);
+        visited.insert(url);
         queue.push(url);
     }
 }
@@ -127,7 +287,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     size_t html_len = htmlLen;
     size_t base_url_len = urlLen;
 
-    /* Step 1: Parse the HTML document. */
+    // Step 1: Parse the HTML document
     document = lxb_html_document_create();
     if (document == NULL)
         printf("Something went wrong 1.\n");
@@ -136,7 +296,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     if (status != LXB_STATUS_OK)
         printf("Something went wrong 2.\n");
 
-    /* Step 2: Find all <a> elements. */
+    // Step 2: Find all <a> elements
     collection = lxb_dom_collection_make(&document->dom_document, 128);
     if (collection == NULL)
         printf("Something went wrong 3.\n");
@@ -148,7 +308,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     printf("Found %zu link(s).\n\n",
            lxb_dom_collection_length(collection));
 
-    /* Step 3: Initialize the URL parser and parse the base URL. */
+    // Step 3: Initialize the URL parser and parse the base URL
     status = lxb_url_parser_init(&url_parser, NULL);
     if (status != LXB_STATUS_OK)
         printf("status is not OK 2.\n");
@@ -162,7 +322,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     std::string description = GetDescription(document);
     printf("Description: %s\n", description.c_str());
 
-    /* Step 4: Iterate links, extract href, and resolve each URL. */
+    // Step 4: Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
         element = lxb_dom_collection_element(collection, i);
 
@@ -174,12 +334,8 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
             continue;
         }
 
-        // printf("[%zu] href: %.*s\n", i, (int) href_len, (const char *) href);
-
-        /* Resolve the href against the base URL. */
-
+        // Resolve the href against the base URL
         lxb_url_parser_clean(&url_parser);
-
         url = lxb_url_parse(&url_parser, base_url, href, href_len);
         if (url == NULL) {
             printf("     Failed to parse URL.\n");
@@ -189,17 +345,17 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
         // get urls into string
         std::string resolved_url;
         (void) lxb_url_serialize(url, callback, &resolved_url, false);
-        VisitURL(httpCode, resolved_url, title, description);
+        AddURL(httpCode, resolved_url, title, description);
     }
 
-    /* Cleanup. */
+    // Cleanup
     lxb_dom_collection_destroy(collection, true);
     lxb_url_parser_destroy(&url_parser, false);
     lxb_url_memory_destroy(base_url);
     lxb_html_document_destroy(document);
 }
 
-int GetHTML(const unsigned char* url, std::string* html, long* httpCode) {
+int GetHTML(const char* url, std::string* html, long* httpCode) {
     html->clear(); // reset
 
     CURL* curl = curl_easy_init();
@@ -223,11 +379,24 @@ int GetHTML(const unsigned char* url, std::string* html, long* httpCode) {
     // extract the server's HTTP response code
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, httpCode);
     printf("HTTP Status Code: %ld\n\n", *httpCode);
-    // std::cout << *html << "\n";
 
     curl_easy_cleanup(curl);
 
     return 0;
+}
+
+void ConnectToDB() {
+    // connect to db
+    // std::string connStr = "host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD;
+    // std::cout << "connStr: " << connStr << "\n";
+    // return;
+    // cx = pqxx::connection(connStr);
+    std::cout << "Connected to " << cx.dbname() << "\n";
+
+    cx.prepare(
+        "insert_page",
+        "INSERT INTO siteData(url, title, description, contentHash, lastVisited) VALUES($1, $2, $3, $4, NOW())"
+    );
 }
 
 int main(int argc, const char* argv[]) {
@@ -249,6 +418,8 @@ int main(int argc, const char* argv[]) {
 
     std::cout << "going with url: " << url << "\n";
 
+    ConnectToDB();
+
     queue.push(url);
 
     std::string html;
@@ -260,7 +431,7 @@ int main(int argc, const char* argv[]) {
 
         printf("\n\nSearching: %s\n", queue.front().c_str());
         const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(queue.front().c_str());
-        int status = GetHTML(urlChar, &html, &httpCode);
+        int status = GetHTML(queue.front().c_str(), &html, &httpCode);
         if (status == 0) // good
             ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
         queue.pop();

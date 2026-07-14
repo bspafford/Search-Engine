@@ -1,13 +1,13 @@
 #include <iostream>
 #include <App.h>
 #include <pqxx/pqxx>
+#include "../login.h"
 
 void ExecuteSQL();
 
-int main() {
-    ExecuteSQL();
-    return 0;
+pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 
+int main() {
     uWS::App().post("/api/search", [](auto *res, auto *req) {
         // read the POST body
         res->onData([](std::string_view data, bool last) {
@@ -30,10 +30,6 @@ int main() {
 
 
 void ExecuteSQL() {
-    // connect to db
-    pqxx::connection cx("host=localhost dbname=SearchEngine user=ben password=password123");
-    std::cout << "Connected to " << cx.dbname() << "\n";
-
     // start a transaction
     pqxx::work tx{cx};
 

@@ -1,5 +1,5 @@
 build/
-/backend/external/
+login.h
 
 compile_commands.json
 

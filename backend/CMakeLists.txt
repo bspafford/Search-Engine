@@ -3,7 +3,6 @@ project(SearchEngine)
 
 set(CMAKE_CXX_STANDARD 20) # c++20
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # symlink or copy the file to root so Neovim/clangd sees it
@@ -47,19 +46,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(curl)
 
-add_executable(program main.cpp)
-
-# linke to executable
-target_include_directories(program PRIVATE
-    external/uWebSockets/src
-    external/uWebSockets/uSockets/src
-)
-
-target_link_libraries(program PRIVATE
-    ${CMAKE_SOURCE_DIR}/external/uWebSockets/uSockets/uSockets.a
-    z
-    pthread
-    pqxx
-    lexbor
-    libcurl
-)
+add_subdirectory(server)
+add_subdirectory(crawler)
+add_subdirectory(external)
