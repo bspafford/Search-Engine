@@ -1,0 +1,79 @@
+* {
+    padding: 0px;
+    margin: 0px;
+}
+
+body {
+    background-color: #2e2d2b;
+}
+
+#searchDiv {
+    display: flex;
+    justify-content: center;
+    margin-top: 100px;
+}
+
+#searchInput {
+    border: 1px solid green;
+    height: 40px;
+    width: 700px;
+    border-radius: 100vw;
+    border: none;
+    padding: 10px 25px;
+    font-size: 16px;
+}
+
+#searchItemContainer {
+    margin-left: 100px;
+}
+
+.searchItem {
+    display: flex;
+    flex-direction: column;
+}
+
+.searchItem p {
+    color: white;
+}
+
+.pageLinkBox {
+    text-decoration: none;
+    width: min-content;
+}
+
+.pageLinkBox:visited .pageLinkTitle {
+    color: purple;
+}
+
+.pageLinkBox:hover .pageLinkTitle {
+    text-decoration: underline;
+}
+
+.pageInfo {
+    display: flex;
+}
+
+.favIcon {
+    width: 30px;
+    height: 30px;
+    border-radius: 100%;
+    margin-right: 10px;
+}
+
+.pageTitle {
+    font-size: 16px;
+}
+
+.pageLink {
+    font-size: 13px;
+}
+
+.searchItem .pageLinkTitle {
+    font-size: 20px;
+    color: blue;
+    margin-top: 5px;
+}
+
+.pageLinkTitle:hover {
+    text-decoration: underline;
+}

@@ -7,33 +7,26 @@
 #include <ctemplate/template.h>
 #include <ctemplate/template_dictionary.h>
 #include <ctemplate/template_enums.h>
+#include <fstream>
 #include "../login.h"
 
-nlohmann::json ExecuteSQL(const std::string& query);
+std::string ExecuteSQL(const std::string& query);
 
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 
-void temp() {
-    std::string input = "server/example.tpl";
-
-    ctemplate::TemplateDictionary dict("example");
-    dict.SetValue("NAME", "John Smith");
-    int winnings = rand() % 100000;
-    dict.SetIntValue("VALUE", winnings);
-    dict.SetFormattedValue("TAXED_VALUE", "%.2f", winnings * 0.83);
-    
-    if (true) {
-        dict.ShowSection("IN_CA");
+std::string ReadFile(std::string fileName) {
+    std::ifstream file(fileName);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file \"" << fileName << "\"\n";
+        return "";
     }
 
-    std::string output;
-    ctemplate::ExpandTemplate(input, ctemplate::DO_NOT_STRIP, &dict, &output);
-    std::cout << output;
+    std::ostringstream ss;
+    ss << file.rdbuf(); // Read the whole file buffer into the stream
+    return ss.str();
 }
 
 int main() {
-    temp();
-    return 0;
     int port = 8080;
 
     uWS::App().get("/search", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
@@ -43,9 +36,6 @@ int main() {
 
         std::string output = ExecuteSQL(std::string(query));
         
-        // std::stringstream ss;
-        // ss << "<html><body><h1>Hello world!</h1><p>you search for \"" << query << "\"</p></body></html>";
-
         res->writeHeader("Content-Type", "text/html");
         res->end(output);
     })
@@ -59,26 +49,48 @@ int main() {
 
 } 
 
-nlohmann::json ExecuteSQL(const std::string& query) {
+std::string RenderItem(pqxx::row_ref item, const std::string& searchItemTpl) {
+    ctemplate::Template* tpl = ctemplate::Template::GetTemplate(searchItemTpl, ctemplate::DO_NOT_STRIP);
+    ctemplate::TemplateDictionary dict("item");
+    dict.SetValue("TITLE", item["title"].c_str());
+    dict.SetValue("URL", item["url"].c_str());
+    dict.SetValue("DESCRIPTION", item["description"].c_str());
+
+    std::string output;
+    tpl->Expand(&output, &dict);
+
+    std::cout << "item: " << output << "\n";
+    return output;
+}
+
+std::string ExecuteSQL(const std::string& query) {
+    std::string searchPageTpl = "server/templates/searchPage.tpl";
+    std::string searchItemTpl = "server/templates/searchItem.tpl";
+    
     // start a transaction
     pqxx::work tx{cx};
 
-    std::stringstream output;
-
     std::string pattern = "%" + query + "%";
-    // for (auto [id, url, title, description, contentHash, lastVisited] : tx.stream<long long, std::string_view, std::string_view, std::string_view, long long, std::string_view> (
-        // "SELECT * FROM siteData WHERE title LIKE $1", pattern)) {
     auto result = tx.exec("SELECT * FROM siteData WHERE title ILIKE $1", pqxx::params(pattern));
 
-    nlohmann::json json;
-    for (auto row : result) {
-         // output << "id: " << row["id"].c_str() << "\nurl: " << row["url"].c_str() << "\ntitle: " << row["title"].c_str() << "\ndescription: " << row["description"].c_str() << "\ncontentHash: " << row["contentHash"].c_str() << "\nlastVisited: " << row["lastVisited"].c_str() << "\n\n";
+    ctemplate::TemplateDictionary dict("search");
+    ctemplate::Template* tpl = ctemplate::Template::GetTemplate(searchPageTpl, ctemplate::DO_NOT_STRIP);
+
+    std::string itemHtml;
+    std::cout << "found " << result.size() << " result(s)\n";
+    for (pqxx::row_ref row : result) {
+        itemHtml += RenderItem(row, searchItemTpl);
     }
+
+    dict.SetValue("ITEMS", itemHtml);
+
+    std::string output;
+    tpl->Expand(&output, &dict);
 
     // Commit the transaction
     std::cout << "Making changes definite\n";
     tx.commit();
     std::cout << "OK\n";
 
-    return output.str();
+    return output;
 }
