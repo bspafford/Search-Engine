@@ -4,6 +4,7 @@
 #include <lexbor/dom/interface.h>
 #include <iostream>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <curl/curl.h>
 #include <lexbor/html/html.h>
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <pqxx/pqxx>
 #include "../login.h"
+#include "curl/easy.h"
 
 // HNSW (Hierarchical Navigable Small World)
 // Vector database
@@ -62,6 +64,10 @@ std::unordered_map<std::string, RobotInfo> robotsTXT;
 std::queue<std::string> queue;
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 std::string botName = "*";
+int timeoutTime = 10;
+int totalTimeoutTime = 30;
+CURL* curl = nullptr;
+CURLU* u = nullptr;
 
 int GetHTML(const char* url, std::string* html, long* httpCode);
 
@@ -76,23 +82,38 @@ static lxb_status_t callback(const lxb_char_t *data, size_t len, void *ctx) {
     return LXB_STATUS_OK;
 }
 
-// returns base url
-// e.g. https://www.google.com/robots.txt would return "https://www.google.com" AND path == "/"
-std::string ExtractOrigin(const std::string& url, std::string& path) {
-    // Find "://"
+// https://google.com: true
+// https://google.com/aboutUs false
+bool IsOriginURL(const std::string url) {
     std::size_t schemeEnd = url.find("://");
     if (schemeEnd == std::string::npos)
-        throw std::runtime_error("Invalid URL");
+        throw std::runtime_error("Invalid URL (IsOriginURL): " + url);
 
     // Find first '/' after the host
     std::size_t pathStart = url.find('/', schemeEnd + 3);
 
+    return pathStart == std::string::npos || pathStart == url.size() - 1;
+}
+
+// returns base url
+// e.g. https://www.google.com/robots.txt would return "https://www.google.com" AND path == "/"
+std::string ExtractOrigin(const std::string& url, std::string* path) {
+    // Find "://"
+    std::size_t schemeEnd = url.find("://");
+    if (schemeEnd == std::string::npos)
+        throw std::runtime_error("Invalid URL (ExtractOrigin): " + url);
+
+    // Find first '/' after the host
+    std::size_t pathStart = url.find('/', schemeEnd + 3);
+
+    // make sure to have trailing '/' on URLs
     if (pathStart == std::string::npos) {
-        path = "/";
-        return url;
+        if (path) *path = "/";
+        bool addTrailing = url.back() != '/';
+        return url + std::string(addTrailing ? "/" : "");
     } else {
-        path = url.substr(pathStart);
-        return url.substr(0, pathStart);
+        if (path) *path = url.substr(pathStart);
+        return url.substr(0, pathStart) + "/";
     }
 }
 
@@ -165,58 +186,100 @@ std::unordered_map<std::string, RobotInfo>::iterator ParseRobotsTXT(const std::s
 // Will also find, parse, and add to RobotsTXT map if not already in there
 bool CheckRobotsTXT(const std::string& url) {
     std::string path;
-    std::string origin = ExtractOrigin(url, path);
+    std::string origin = ExtractOrigin(url, &path);
 
     // if origin already inside robotsTXT, then find path that fits to rule. If non, i guess allow
     // if not already inside map, then go to origin + "/robots.txt", parse file, and add to map, then check
     auto it = robotsTXT.find(origin);
     if (it == robotsTXT.end()) { // wasn't found
         // go to (origin) + "/robots.txt"
+        std::cout << "getting robots.txt for: " << origin << "\n";
         std::string output;
         long httpCode;
-        GetHTML((origin + "/robots.txt").c_str(), &output, &httpCode);
+        GetHTML((origin + "robots.txt").c_str(), &output, &httpCode);
+
+        if (httpCode >= 300 || httpCode == 0) {
+            robotsTXT.insert({ origin, {} }); // add blank input, didn't find robots.txt
+            std::cout << "problem finding \"" << origin << "robots.txt\", http code: " << httpCode << ", returning\n";
+            return true;
+        }
+
+        std::cout << "got it, now parsing\n";
 
         // parse file
         it = ParseRobotsTXT(origin, output);
+
+        std::cout << "finished parsing\n";
     }
 
     bool allow;
     return it->second.FindRule(path);
 }
 
+// removes GET tags (everything after '?' OR '#')
+void ParsedURL(std::string& url) {
+    // removes ?...
+    std::size_t pos = url.find('?', 0);
+    if (pos != std::string::npos) // GET was in string
+        url = url.substr(0, pos);
+
+    // removes #...
+    pos = url.find('#', 0);
+    if (pos != std::string::npos)
+        url = url.substr(0, pos);
+
+    // if it doesn't have a trailing slash, it will add one
+    url += url.back() != '/' ? "/" : "";
+}
+
 // whether or not to add this url based on robots.txt or if already visited
-bool ShouldVisit(const std::string& url) {
-    bool isAllowed = CheckRobotsTXT(url);
+bool ShouldVisit(std::string& url) {
+    ParsedURL(url); // fix formatting
     bool hasntVisited = visited.find(url) == visited.end();
-    return isAllowed && hasntVisited;
+    return hasntVisited;
 }
 
-void ExecuteSQL(std::string& url, std::string& title, std::string& description, long contentHash) {
-    // start a transaction
-    pqxx::work tx{cx};
-
-    tx.exec(pqxx::prepped("insert_page"), pqxx::params(url, title, description, contentHash));
-
-    // Commit the transaction
-    std::cout << "Making changes definite\n";
-    tx.commit();
-    std::cout << "OK\n";
-}
-
-// may add url to search further
-// wont add if already searched through or isn't allowed to visit
-void AddURL(long statusCode, std::string& url, std::string& title, std::string& description) {
+void ExecuteSQL(long httpCode, std::string& url, std::string& title, std::string& description, long contentHash) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
     // 5xx: retry later
-    
+    if (httpCode >= 300) {
+        std::cout << "bad http code: " << httpCode << " on: " << url << ", returning\n";
+        return;
+    }
+
+    // if url IS the base, then do it
+    if (!IsOriginURL(url))
+        return;
+
+    // start a transaction
+    pqxx::work tx{cx};
+
+    bool addTrailingSlash = url.back() != '/'; // add trailing slash if it doesn't have one already
+    std::cout << "adding to DB!: " << url << (addTrailingSlash ? "/" : "") << "\n";
+    tx.exec(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash));
+
+    // Commit the transaction
+    tx.commit();
+}
+
+// may add url to search further
+// wont add if already searched through or isn't allowed to visit
+void AddURL(std::string& url) {
     if (ShouldVisit(url)) { // if haven't already seen url
-        printf("Visited: %s\n", url.c_str());
-        if (statusCode < 300)
-            ExecuteSQL(url, title, description, 0);
+        printf("Going to Visit: %s\n", url.c_str());
         visited.insert(url);
         queue.push(url);
+
+        // if haven't visited origin url then add to queue
+        std::string origin = ExtractOrigin(url, nullptr);
+        if (visited.find(origin) == visited.end()) {
+            std::cout << "adding origin: \"" << origin << "\"\n";
+            AddURL(origin);
+        }
+    } else {
+        std::cout << "shouldn't visit url: \"" << url << "\"\n";
     }
 }
 
@@ -226,6 +289,7 @@ std::string GetTitle(lxb_html_document_t* document) {
     if (!title) {
         printf("title is null");
     }
+
     lxb_status_t status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), title, (const lxb_char_t*)"title", 5);
     if (status != LXB_STATUS_OK) {
         printf("No title found");
@@ -233,6 +297,9 @@ std::string GetTitle(lxb_html_document_t* document) {
 
     size_t titleLen;
     lxb_dom_element_t* titleElement = lxb_dom_collection_element(title, 0);
+    if (!titleElement)
+        return "";
+
     lxb_char_t* titleChars = lxb_dom_node_text_content(lxb_dom_interface_node(titleElement), &titleLen);
     std::string titleString(reinterpret_cast<const char*>(titleChars));
 
@@ -251,7 +318,7 @@ std::string GetDescription(lxb_html_document_t* document) {
 
     lxb_status_t status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), description, (const lxb_char_t*)"meta", 4);
     if (status != LXB_STATUS_OK)
-        printf("No title found");
+        printf("No description found");
 
     for (int i = 0; i < lxb_dom_collection_length(description); ++i) {
         element = lxb_dom_collection_element(description, i);
@@ -272,6 +339,12 @@ std::string GetDescription(lxb_html_document_t* document) {
     /* Cleanup. */
     lxb_dom_collection_destroy(description, true);
     return "No description found";
+}
+
+bool IsValidURL(const std::string url) {
+    CURLUcode rc = curl_url_set(u, CURLUPART_URL, url.c_str(), 0);
+    bool isValid = rc == CURLUE_OK;
+    return isValid;
 }
 
 void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, const unsigned char* html, size_t htmlLen) {
@@ -305,8 +378,8 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     if (status != LXB_STATUS_OK)
         printf("status is not OK 1.\n");
 
-    printf("Found %zu link(s).\n\n",
-           lxb_dom_collection_length(collection));
+    printf("Found %zu link(s).\n\n", lxb_dom_collection_length(collection));
+
 
     // Step 3: Initialize the URL parser and parse the base URL
     status = lxb_url_parser_init(&url_parser, NULL);
@@ -318,9 +391,12 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
         printf("base_url is NULL.\n");
 
     std::string title = GetTitle(document);
-    printf("Title: %s\n", title.c_str());
     std::string description = GetDescription(document);
-    printf("Description: %s\n", description.c_str());
+
+    std::string urlStr(reinterpret_cast<const char*>(baseUrlStr));
+    std::cout << "baseURlStr: " << urlStr << ", isorigin? " << IsOriginURL(urlStr) << "\n";
+    if (IsOriginURL(urlStr)) // only add to database if Origin URL
+        ExecuteSQL(httpCode, urlStr, title, description, 0);
 
     // Step 4: Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
@@ -345,7 +421,10 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
         // get urls into string
         std::string resolved_url;
         (void) lxb_url_serialize(url, callback, &resolved_url, false);
-        AddURL(httpCode, resolved_url, title, description);
+        if (IsValidURL(resolved_url)) {
+            ParsedURL(resolved_url);
+            AddURL(resolved_url);
+        }
     }
 
     // Cleanup
@@ -357,16 +436,13 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
 
 int GetHTML(const char* url, std::string* html, long* httpCode) {
     html->clear(); // reset
-
-    CURL* curl = curl_easy_init();
     if (!curl)
-        return -1;
+        throw std::runtime_error("Curl was null\n");
 
     CURLcode res;
     *httpCode = 0;
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, html);
 
     res = curl_easy_perform(curl); // perform request
@@ -378,19 +454,12 @@ int GetHTML(const char* url, std::string* html, long* httpCode) {
 
     // extract the server's HTTP response code
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, httpCode);
-    printf("HTTP Status Code: %ld\n\n", *httpCode);
-
-    curl_easy_cleanup(curl);
+    printf("HTTP Status Code: %ld, for: %s\n\n", *httpCode, url);
 
     return 0;
 }
 
 void ConnectToDB() {
-    // connect to db
-    // std::string connStr = "host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD;
-    // std::cout << "connStr: " << connStr << "\n";
-    // return;
-    // cx = pqxx::connection(connStr);
     std::cout << "Connected to " << cx.dbname() << "\n";
 
     cx.prepare(
@@ -399,9 +468,24 @@ void ConnectToDB() {
     );
 }
 
+void InitCurl() {
+    curl = curl_easy_init();
+
+    // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutTime);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, totalTimeoutTime);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
+
+    u = curl_url();
+}
+
+void CleanUp() {
+    curl_easy_cleanup(curl);
+    curl_url_cleanup(u);
+}
+
 int main(int argc, const char* argv[]) {
-    // try to parse further
-    // things like /index.html, ?tag="...", etc should be considered the same url
+    InitCurl();
 
     std::string url = "https://www.google.com"; // default URL
     long depth = 10; // default depth
@@ -417,27 +501,37 @@ int main(int argc, const char* argv[]) {
         depth = std::stol(argv[2]);
 
     std::cout << "going with url: " << url << "\n";
+    std::cout << "going with depth: " << depth << "\n";
 
     ConnectToDB();
 
-    queue.push(url);
+    AddURL(url);
 
     std::string html;
     long httpCode;
     long index = 0;
     while (!queue.empty()) {
-        if (depth >= 0 && ++index > depth) // has to be a positive depth value, will stop once depth is reached
+        if (depth >= 0 && index > depth) // has to be a positive depth value, will stop once depth is reached
             break;
 
-        printf("\n\nSearching: %s\n", queue.front().c_str());
-        const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(queue.front().c_str());
-        int status = GetHTML(queue.front().c_str(), &html, &httpCode);
-        if (status == 0) // good
-            ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
+        ParsedURL(url);
+        if (CheckRobotsTXT(url)) {
+            printf("\n\n#%ld, Searching: %s\n", index, queue.front().c_str());
+            const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(queue.front().c_str());
+            int status = GetHTML(queue.front().c_str(), &html, &httpCode);
+            if (status == 0) // good
+                ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
+        } else {
+            std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
+        }
         queue.pop();
+
+        ++index;
     }
 
     printf("\n\nSearched %ld sites\n", index - 1);
+    
+    CleanUp();
 
     return 0;
 }
