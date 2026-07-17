@@ -47,22 +47,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(curl)
 
-# External Projects
-# ExternalProject_Add(
-    # ctemplate
-    # GIT_REPOSITORY https://github.com/olafvdspek/ctemplate.git
-    # GIT_TAG ctemplate-2.4
-
-    # BUILD_IN_SOURCE 1
-
-    # PATCH_COMMAND sh <SOURCE_DIR>/autogen.sh
-
-    # CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
-
-    # BUILD_COMMAND $(MAKE)
-    # INSTALL_COMMAND $(MAKE) install
-# )
-
+FetchContent_Declare(
+    IXWebSocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+)
+FetchContent_MakeAvailable(IXWebSocket)
 
 add_subdirectory(server)
 add_subdirectory(crawler)

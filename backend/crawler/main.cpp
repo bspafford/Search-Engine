@@ -15,7 +15,8 @@
 #include <chrono>
 #include <pqxx/pqxx>
 #include "../login.h"
-#include "curl/easy.h"
+
+#include "renderJS.h"
 
 // HNSW (Hierarchical Navigable Small World)
 // Vector database
@@ -341,6 +342,46 @@ std::string GetDescription(lxb_html_document_t* document) {
     return "No description found";
 }
 
+void GetFavicon(lxb_html_document_t* document) {
+    lxb_dom_element_t* element;
+    const lxb_char_t* rel;
+    size_t len;
+
+    lxb_dom_collection_t* favicon = lxb_dom_collection_make(&document->dom_document, 32);
+    if (!favicon)
+        printf("favicon is null");
+
+    lxb_status_t status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), favicon, (const lxb_char_t*)"link", 4);
+    if (status != LXB_STATUS_OK)
+        printf("No favicon found");
+
+    std::cout << "favicon length: " << lxb_dom_collection_length(favicon) << "\n";
+    for (int i = 0; i < lxb_dom_collection_length(favicon); ++i) {
+        element = lxb_dom_collection_element(favicon, i);
+        rel = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "rel", 3, &len);
+        std::cout << "bad rel\n";
+        if (!rel) // was no name attribute
+            continue;
+
+        std::cout << "rel not icon: " << rel << "\n";
+        if (std::strcmp(reinterpret_cast<const char*>(rel), "icon") != 0)
+            continue;
+
+        std::cout << "found rel\n";
+        rel = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "href", 4, &len);
+        std::string faviconStr(reinterpret_cast<const char*>(rel));
+
+        lxb_dom_collection_destroy(favicon, true);
+        std::cout << faviconStr << "\n";
+        return;
+    }
+
+    /* Cleanup. */
+    lxb_dom_collection_destroy(favicon, true);
+    std::cout << "No favicon found 1\n";
+    return;
+}
+
 bool IsValidURL(const std::string url) {
     CURLUcode rc = curl_url_set(u, CURLUPART_URL, url.c_str(), 0);
     bool isValid = rc == CURLUE_OK;
@@ -392,6 +433,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
 
     std::string title = GetTitle(document);
     std::string description = GetDescription(document);
+    GetFavicon(document);
 
     std::string urlStr(reinterpret_cast<const char*>(baseUrlStr));
     std::cout << "baseURlStr: " << urlStr << ", isorigin? " << IsOriginURL(urlStr) << "\n";
@@ -503,6 +545,9 @@ int main(int argc, const char* argv[]) {
     std::cout << "going with url: " << url << "\n";
     std::cout << "going with depth: " << depth << "\n";
 
+    RenderPage(url);
+    return 0;
+
     ConnectToDB();
 
     AddURL(url);
@@ -519,6 +564,7 @@ int main(int argc, const char* argv[]) {
             printf("\n\n#%ld, Searching: %s\n", index, queue.front().c_str());
             const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(queue.front().c_str());
             int status = GetHTML(queue.front().c_str(), &html, &httpCode);
+            std::cout << "html: " << html << "\n";
             if (status == 0) // good
                 ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
         } else {
