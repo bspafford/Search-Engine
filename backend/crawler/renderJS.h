@@ -1,10 +1,18 @@
 #pragma once
 
 #include <string>
-#include <curl/curl.h>
+#include <vector>
 
-CURL* Init();
-std::string RenderPage(const std::string& url);
+namespace Renderer {
+    void Init();
+    void StartClient(const std::string& debuggerUrl);
 
-std::string LaunchChromium(CURL* curl);
-std::string CurlGet(CURL* curl, const std::string& url);
+    void LaunchChromium();
+    std::string CurlGet(const std::string& url, long* httpCode);
+    std::vector<unsigned char> DownloadImage(const std::string& url);
+    std::string GetHTML(const std::string& url, long* httpCode);
+
+    void CleanUp();
+
+    std::string Hash(const std::string& input);
+}

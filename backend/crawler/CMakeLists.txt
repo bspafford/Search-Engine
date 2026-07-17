@@ -9,9 +9,12 @@ target_include_directories(crawler PRIVATE
     ${INSTALL_DIR}/include
 )
 
+find_package(Boost REQUIRED COMPONENTS url)
+
 target_link_libraries(crawler PRIVATE
     lexbor
     libcurl
     pqxx
     ixwebsocket
+    Boost::url
 )

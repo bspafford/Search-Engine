@@ -1,7 +1,7 @@
 <div class="searchItem">
     <a class="pageLinkBox" href="{{URL}}">
         <div class="pageInfo">
-            <img class="favIcon" src="favicon.jpg">
+            <img class="favIcon" src="favicons/{{FAVICON}}">
             <div>
                 <p class="pageTitle">{{TITLE}}</p>
                 <p class="pageLink">{{URL}}</p>

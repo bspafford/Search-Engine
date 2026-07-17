@@ -3,6 +3,7 @@
 #include <lexbor/dom/collection.h>
 #include <lexbor/dom/interface.h>
 #include <iostream>
+#include <fstream>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,7 @@
 #include <queue>
 #include <chrono>
 #include <pqxx/pqxx>
+#include <boost/url.hpp>
 #include "../login.h"
 
 #include "renderJS.h"
@@ -65,17 +67,7 @@ std::unordered_map<std::string, RobotInfo> robotsTXT;
 std::queue<std::string> queue;
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 std::string botName = "*";
-int timeoutTime = 10;
-int totalTimeoutTime = 30;
-CURL* curl = nullptr;
 CURLU* u = nullptr;
-
-int GetHTML(const char* url, std::string* html, long* httpCode);
-
-static size_t write_data(char *contents, size_t size, size_t nmemb, void *userp) {
-    ((std::string*)userp)->append((char*)contents, size * nmemb);
-    return size * nmemb;
-}
 
 static lxb_status_t callback(const lxb_char_t *data, size_t len, void *ctx) {
     std::string* str = static_cast<std::string*>(ctx);
@@ -195,9 +187,8 @@ bool CheckRobotsTXT(const std::string& url) {
     if (it == robotsTXT.end()) { // wasn't found
         // go to (origin) + "/robots.txt"
         std::cout << "getting robots.txt for: " << origin << "\n";
-        std::string output;
         long httpCode;
-        GetHTML((origin + "robots.txt").c_str(), &output, &httpCode);
+        std::string output = Renderer::CurlGet(std::string(origin + "robots.txt"), &httpCode);
 
         if (httpCode >= 300 || httpCode == 0) {
             robotsTXT.insert({ origin, {} }); // add blank input, didn't find robots.txt
@@ -240,7 +231,7 @@ bool ShouldVisit(std::string& url) {
     return hasntVisited;
 }
 
-void ExecuteSQL(long httpCode, std::string& url, std::string& title, std::string& description, long contentHash) {
+void ExecuteSQL(long httpCode, std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
@@ -259,7 +250,7 @@ void ExecuteSQL(long httpCode, std::string& url, std::string& title, std::string
 
     bool addTrailingSlash = url.back() != '/'; // add trailing slash if it doesn't have one already
     std::cout << "adding to DB!: " << url << (addTrailingSlash ? "/" : "") << "\n";
-    tx.exec(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash));
+    tx.exec(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon));
 
     // Commit the transaction
     tx.commit();
@@ -269,18 +260,13 @@ void ExecuteSQL(long httpCode, std::string& url, std::string& title, std::string
 // wont add if already searched through or isn't allowed to visit
 void AddURL(std::string& url) {
     if (ShouldVisit(url)) { // if haven't already seen url
-        printf("Going to Visit: %s\n", url.c_str());
         visited.insert(url);
         queue.push(url);
 
         // if haven't visited origin url then add to queue
         std::string origin = ExtractOrigin(url, nullptr);
-        if (visited.find(origin) == visited.end()) {
-            std::cout << "adding origin: \"" << origin << "\"\n";
+        if (visited.find(origin) == visited.end())
             AddURL(origin);
-        }
-    } else {
-        std::cout << "shouldn't visit url: \"" << url << "\"\n";
     }
 }
 
@@ -342,7 +328,7 @@ std::string GetDescription(lxb_html_document_t* document) {
     return "No description found";
 }
 
-void GetFavicon(lxb_html_document_t* document) {
+std::string GetFavicon(lxb_html_document_t* document) {
     lxb_dom_element_t* element;
     const lxb_char_t* rel;
     size_t len;
@@ -359,27 +345,65 @@ void GetFavicon(lxb_html_document_t* document) {
     for (int i = 0; i < lxb_dom_collection_length(favicon); ++i) {
         element = lxb_dom_collection_element(favicon, i);
         rel = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "rel", 3, &len);
-        std::cout << "bad rel\n";
+
         if (!rel) // was no name attribute
             continue;
 
-        std::cout << "rel not icon: " << rel << "\n";
         if (std::strcmp(reinterpret_cast<const char*>(rel), "icon") != 0)
             continue;
 
-        std::cout << "found rel\n";
         rel = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "href", 4, &len);
         std::string faviconStr(reinterpret_cast<const char*>(rel));
 
         lxb_dom_collection_destroy(favicon, true);
-        std::cout << faviconStr << "\n";
-        return;
+        std::cout << "favicon: " << faviconStr << "\n";
+        return faviconStr;
     }
 
     /* Cleanup. */
     lxb_dom_collection_destroy(favicon, true);
     std::cout << "No favicon found 1\n";
-    return;
+    return "";
+}
+
+// resolves absolute and relative links to absolute
+// e.g.: https://examle.com/blog/page.html
+// /favicon.ico                     --> https://example.com/favicon.ico
+// favicon.ico                      --> https://example.com/blog/favicon.ico
+// https://example.com/favicon.png  --> same
+// //cdn.example.com/favicon.png    --> https://cdn.example.com/favicon.png
+std::string ResolveUrl(const std::string& origin, const std::string& favicon) {
+    boost::urls::url_view base(origin);
+    boost::urls::url_view relative(favicon);
+    boost::urls::url absolute;
+
+    boost::urls::resolve(base, relative, absolute);
+
+    return absolute.buffer();
+}
+
+std::string DownloadFavicon(lxb_html_document_t* document, const std::string& origin) {
+    std::string favicon = GetFavicon(document);
+
+    std::string resolvedUrl = "";
+    if (favicon.empty()) // test if default "/favicon.ico" exists first
+        resolvedUrl = origin + (origin.back() != '/' ? "/" : "") + "favicon.ico";
+    else
+        resolvedUrl = ResolveUrl(origin, favicon);
+
+    // download
+    std::cout << "resolvedUrl: " << resolvedUrl << "\n";
+
+    std::vector<unsigned char> data = Renderer::DownloadImage(resolvedUrl);
+
+    if (data.empty()) // was no favicon
+        return "";
+
+    // save data to file
+    std::string fileName = Renderer::Hash(resolvedUrl);
+    std::ofstream file("/var/www/html/favicons/" + fileName, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(data.data()), data.size());
+    return fileName;
 }
 
 bool IsValidURL(const std::string url) {
@@ -431,14 +455,15 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     if (base_url == NULL)
         printf("base_url is NULL.\n");
 
-    std::string title = GetTitle(document);
-    std::string description = GetDescription(document);
-    GetFavicon(document);
-
     std::string urlStr(reinterpret_cast<const char*>(baseUrlStr));
     std::cout << "baseURlStr: " << urlStr << ", isorigin? " << IsOriginURL(urlStr) << "\n";
+
+    std::string title = GetTitle(document);
+    std::string description = GetDescription(document);
+    std::string favicon = DownloadFavicon(document, urlStr);
+
     if (IsOriginURL(urlStr)) // only add to database if Origin URL
-        ExecuteSQL(httpCode, urlStr, title, description, 0);
+        ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
 
     // Step 4: Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
@@ -476,59 +501,27 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     lxb_html_document_destroy(document);
 }
 
-int GetHTML(const char* url, std::string* html, long* httpCode) {
-    html->clear(); // reset
-    if (!curl)
-        throw std::runtime_error("Curl was null\n");
-
-    CURLcode res;
-    *httpCode = 0;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, html);
-
-    res = curl_easy_perform(curl); // perform request
-    
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Transfer failed: %s\n", curl_easy_strerror(res));
-        return -1;
-    }
-
-    // extract the server's HTTP response code
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, httpCode);
-    printf("HTTP Status Code: %ld, for: %s\n\n", *httpCode, url);
-
-    return 0;
-}
-
 void ConnectToDB() {
     std::cout << "Connected to " << cx.dbname() << "\n";
 
     cx.prepare(
         "insert_page",
-        "INSERT INTO siteData(url, title, description, contentHash, lastVisited) VALUES($1, $2, $3, $4, NOW())"
+        "INSERT INTO siteData(url, title, description, contentHash, lastVisited, favicon) VALUES($1, $2, $3, $4, NOW(), $5)"
     );
 }
 
-void InitCurl() {
-    curl = curl_easy_init();
-
-    // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutTime);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, totalTimeoutTime);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
-
+void Init() {
     u = curl_url();
+    Renderer::Init();
+    ConnectToDB();
 }
 
 void CleanUp() {
-    curl_easy_cleanup(curl);
     curl_url_cleanup(u);
+    Renderer::CleanUp();
 }
 
 int main(int argc, const char* argv[]) {
-    InitCurl();
-
     std::string url = "https://www.google.com"; // default URL
     long depth = 10; // default depth
 
@@ -545,10 +538,7 @@ int main(int argc, const char* argv[]) {
     std::cout << "going with url: " << url << "\n";
     std::cout << "going with depth: " << depth << "\n";
 
-    RenderPage(url);
-    return 0;
-
-    ConnectToDB();
+    Init();
 
     AddURL(url);
 
@@ -561,12 +551,10 @@ int main(int argc, const char* argv[]) {
 
         ParsedURL(url);
         if (CheckRobotsTXT(url)) {
-            printf("\n\n#%ld, Searching: %s\n", index, queue.front().c_str());
+            printf("\n\n#%ld/%ld, Searching: %s\n", index, queue.size(), queue.front().c_str());
             const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(queue.front().c_str());
-            int status = GetHTML(queue.front().c_str(), &html, &httpCode);
-            std::cout << "html: " << html << "\n";
-            if (status == 0) // good
-                ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
+            std::string html = Renderer::GetHTML(queue.front(), &httpCode);
+            ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
         } else {
             std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
         }

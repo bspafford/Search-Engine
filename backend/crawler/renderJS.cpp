@@ -13,13 +13,41 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <sys/prctl.h>
+#include <openssl/sha.h>
 
-static size_t write_data1(char *contents, size_t size, size_t nmemb, void *userp) {
+std::string debuggerUrl = "";
+pid_t pid = -1;
+CURL* curl = nullptr;
+CURL* imageCurl = nullptr;
+int timeoutTime = 10;
+int totalTimeoutTime = 30;
+
+ix::WebSocket webSocket;
+
+bool gettingHTML = false;
+std::string htmlBody = "";
+
+bool finishedSetup = false;
+
+namespace Renderer {
+static size_t write_data(char *contents, size_t size, size_t nmemb, void *userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
+size_t write_byte_data(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t total = size * nmemb;
+    auto* buffer = static_cast<std::vector<unsigned char>*>(userp);
+    
+    unsigned char* bytes = static_cast<unsigned char*>(contents);
+    buffer->insert(buffer->end(), bytes, bytes + total);
+
+    return total;
+}
+
 void EnablePage(ix::WebSocket& webSocket) {
+    std::cout << "enable page\n";
     // enable page
     nlohmann::json pageDomain;
     pageDomain["id"] = 1;
@@ -29,9 +57,12 @@ void EnablePage(ix::WebSocket& webSocket) {
 
 void FinishedSetup() {
     // something here to tell main that we are good to go
+    std::cout << "finished setup\n";
+    finishedSetup = true;
 }
 
 void NavigatePage(ix::WebSocket& webSocket, const std::string& url) {
+    std::cout << "navigate page\n";
     nlohmann::json navigate;
     navigate["id"] = 2;
     navigate["method"] = "Page.navigate";
@@ -40,6 +71,7 @@ void NavigatePage(ix::WebSocket& webSocket, const std::string& url) {
 }
 
 void EvaluateHTML(ix::WebSocket& webSocket) {
+    std::cout << "evanluateHTML\n";
     nlohmann::json navigate;
     navigate["id"] = 3;
     navigate["method"] = "Runtime.evaluate";
@@ -51,21 +83,32 @@ void EvaluateHTML(ix::WebSocket& webSocket) {
 }
 
 void RenderedHTML(const nlohmann::json& json) {
-    std::cout << "The HTML CODE:\n" << json["result"]["result"]["value"].get<std::string>() << "\n\n";
+    htmlBody = json["result"]["result"]["value"].get<std::string>();
+    gettingHTML = false;
 }
 
-void Client(const std::string& url, const std::string& debuggerUrl) {
-    ix::initNetSystem();
+// returns the rendered html
+std::string GetHTML(const std::string& url, long* httpCode) {
+    gettingHTML = true;
+    NavigatePage(webSocket, url);
+    if (httpCode)
+        *httpCode = 200; // temp
 
-    ix::WebSocket webSocket;
+    std::cout << "navigated, now gonig to wait\n";
+    while (gettingHTML) // wait until received rendered HTML body
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
+    return htmlBody;
+}
+
+void StartClient(const std::string& debuggerUrl) {
     // connect to a server
     webSocket.setUrl(debuggerUrl);
 
     std::cout << "Connecting to " << debuggerUrl << "..." << std::endl;
 
     // setup a callback to be fired
-    webSocket.setOnMessageCallback([&webSocket, url](const ix::WebSocketMessagePtr& msg) {
+    webSocket.setOnMessageCallback([](const ix::WebSocketMessagePtr& msg) {
         if (msg->type == ix::WebSocketMessageType::Message) {
             nlohmann::json json = nlohmann::json::parse(msg->str);
             if (!json.contains("id")) {
@@ -93,36 +136,43 @@ void Client(const std::string& url, const std::string& debuggerUrl) {
     });
 
     webSocket.start();
-
-    std::string text;
-    while (std::getline(std::cin, text)) {
-        webSocket.send(text);
-        std::cout << "> " << std::flush;
-    }
 }
 
-CURL* Init() {
-    CURL* curl = curl_easy_init();
-
-    int timeoutTime = 10;
-    int totalTimeoutTime = 30;
+void Init() {
+    curl = curl_easy_init();
 
     // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutTime);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, totalTimeoutTime);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data1);
-    // curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
 
-    if (!curl)
-        throw std::runtime_error("Curl was null\n");
+    imageCurl = curl_easy_init();
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutTime);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, totalTimeoutTime);
+    curl_easy_setopt(imageCurl, CURLOPT_WRITEFUNCTION, write_byte_data);
+    curl_easy_setopt(imageCurl, CURLOPT_FOLLOWLOCATION, 1L);
 
-    return curl;
+    pid = fork();
+
+    if (pid == 0) {
+        prctl(PR_SET_PDEATHSIG, SIGTERM); // kill child task if parent task stops
+        execlp("chromium",
+            "chromium",
+            "--headless=new",
+            "--remote-debugging-port=9222",
+            "--remote-allow-origins=ws://127.0.0.1:9222",
+            nullptr
+        );
+
+        _exit(1);
+    }
+
+    LaunchChromium();
 }
 
-std::string CurlGet(CURL* curl, const std::string& url) {
+std::string CurlGet(const std::string& url, long* httpCode) {
     std::string html = "";
     CURLcode res;
-    long httpCode = -1;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &html);
@@ -135,61 +185,59 @@ std::string CurlGet(CURL* curl, const std::string& url) {
     }
 
     // extract the server's HTTP response code
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-    printf("HTTP Status Code: %ld, for: %s\n\n", httpCode, url.c_str());
+    if (httpCode) {
+        *httpCode = 0; // init to 0
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, httpCode);
+        printf("HTTP Status Code: %ld, for: %s\n\n", *httpCode, url.c_str());
+    }
 
     return html;
 }
 
-std::string LaunchChromium(CURL* curl) {
-    /*
-    auto start = std::chrono::steady_clock::now();
+std::vector<unsigned char> DownloadImage(const std::string& url) {
+    std::vector<unsigned char> data;
 
-    while (true) {
-        if (!CurlGet(curl, "http://127.0.0.1:9222/json/version").empty()) {
-            break; // Chromium is ready
-        }
+    curl_easy_setopt(imageCurl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(imageCurl, CURLOPT_WRITEDATA, &data);
 
-        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(10)) {
-            throw std::runtime_error("Chromium failed to start");
-        }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    */
+    CURLcode result = curl_easy_perform(imageCurl);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    if (result != CURLE_OK)
+        data.clear();
 
-    std::string data = CurlGet(curl, "127.0.0.1:9222/json/list");
+    return data;
+}
+
+void LaunchChromium() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // temp
+
+    std::string data = CurlGet("127.0.0.1:9222/json/list", nullptr);
 
     nlohmann::json json = nlohmann::json::parse(data);
-    return json[2]["webSocketDebuggerUrl"];
+    StartClient(json[2]["webSocketDebuggerUrl"]);
+
+    while (!finishedSetup)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 
-std::string RenderPage(const std::string& url) {
-    CURL* curl = Init();
-
-    pid_t pid = fork();
-
-    if (pid == 0) {
-        execlp("chromium",
-            "chromium",
-            "--headless=new",
-            "--remote-debugging-port=9222",
-            "--remote-allow-origins=ws://127.0.0.1:9222",
-            nullptr
-        );
-
-        _exit(1);
-    }
-
-    std::string debuggerUrl = LaunchChromium(curl);
-
-    Client(url, debuggerUrl);
-
+void CleanUp() {
     curl_easy_cleanup(curl);
-
+    curl_easy_cleanup(imageCurl);
     kill(pid, SIGTERM);
     waitpid(pid, nullptr, 0);
-    return "";
 }
+
+std::string Hash(const std::string& input) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+
+    SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), hash);
+
+    std::stringstream ss;
+    for (unsigned char c : hash) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c);
+    }
+
+    return ss.str();
+}
+} // namespace Renderer

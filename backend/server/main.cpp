@@ -55,11 +55,11 @@ std::string RenderItem(pqxx::row_ref item, const std::string& searchItemTpl) {
     dict.SetValue("TITLE", item["title"].c_str());
     dict.SetValue("URL", item["url"].c_str());
     dict.SetValue("DESCRIPTION", item["description"].c_str());
+    dict.SetValue("FAVICON", item["favicon"].c_str());
 
     std::string output;
     tpl->Expand(&output, &dict);
 
-    std::cout << "item: " << output << "\n";
     return output;
 }
 
@@ -88,9 +88,7 @@ std::string ExecuteSQL(const std::string& query) {
     tpl->Expand(&output, &dict);
 
     // Commit the transaction
-    std::cout << "Making changes definite\n";
     tx.commit();
-    std::cout << "OK\n";
 
     return output;
 }
