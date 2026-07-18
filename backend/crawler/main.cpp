@@ -506,7 +506,15 @@ void ConnectToDB() {
 
     cx.prepare(
         "insert_page",
-        "INSERT INTO siteData(url, title, description, contentHash, lastVisited, favicon) VALUES($1, $2, $3, $4, NOW(), $5)"
+        "INSERT INTO siteData(url, title, description, contentHash, lastVisited, favicon) "
+        "VALUES($1, $2, $3, $4, NOW(), $5) "
+        "ON CONFLICT (url) "
+        "DO UPDATE SET "
+        "title = EXCLUDED.title, "
+        "description = EXCLUDED.description, "
+        "contentHash = EXCLUDED.contentHash, "
+        "lastVisited = NOW(), "
+        "favicon = EXCLUDED.favicon"
     );
 }
 
@@ -522,6 +530,8 @@ void CleanUp() {
 }
 
 int main(int argc, const char* argv[]) {
+    std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+
     std::string url = "https://www.google.com"; // default URL
     long depth = 10; // default depth
 
@@ -564,6 +574,9 @@ int main(int argc, const char* argv[]) {
     }
 
     printf("\n\nSearched %ld sites\n", index - 1);
+    std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
+    std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime)};
+    std::cout << "Took: " << hms.hours().count() << "h " << hms.minutes().count() << "m " << hms.seconds().count() << "s\n";
     
     CleanUp();
 
