@@ -1,6 +1,7 @@
 add_executable(crawler
     main.cpp
     renderJS.cpp
+    UrlHelper.cpp
 )
 
 # linke to executable

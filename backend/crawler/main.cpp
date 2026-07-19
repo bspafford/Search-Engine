@@ -19,6 +19,7 @@
 #include "../login.h"
 
 #include "renderJS.h"
+#include "UrlHelper.h"
 
 // HNSW (Hierarchical Navigable Small World)
 // Vector database
@@ -208,25 +209,9 @@ bool CheckRobotsTXT(const std::string& url) {
     return it->second.FindRule(path);
 }
 
-// removes GET tags (everything after '?' OR '#')
-void ParsedURL(std::string& url) {
-    // removes ?...
-    std::size_t pos = url.find('?', 0);
-    if (pos != std::string::npos) // GET was in string
-        url = url.substr(0, pos);
-
-    // removes #...
-    pos = url.find('#', 0);
-    if (pos != std::string::npos)
-        url = url.substr(0, pos);
-
-    // if it doesn't have a trailing slash, it will add one
-    url += url.back() != '/' ? "/" : "";
-}
-
 // whether or not to add this url based on robots.txt or if already visited
 bool ShouldVisit(std::string& url) {
-    ParsedURL(url); // fix formatting
+    UrlHelper::Normalize(url); // fix formatting
     bool hasntVisited = visited.find(url) == visited.end();
     return hasntVisited;
 }
@@ -489,7 +474,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
         std::string resolved_url;
         (void) lxb_url_serialize(url, callback, &resolved_url, false);
         if (IsValidURL(resolved_url)) {
-            ParsedURL(resolved_url);
+            UrlHelper::Normalize(resolved_url);
             AddURL(resolved_url);
         }
     }
@@ -521,6 +506,7 @@ void ConnectToDB() {
 void Init() {
     u = curl_url();
     Renderer::Init();
+    UrlHelper::Init();
     ConnectToDB();
 }
 
@@ -550,6 +536,9 @@ int main(int argc, const char* argv[]) {
 
     Init();
 
+    UrlHelper::Normalize(url);
+    return 0;
+
     AddURL(url);
 
     std::string html;
@@ -559,16 +548,17 @@ int main(int argc, const char* argv[]) {
         if (depth >= 0 && index > depth) // has to be a positive depth value, will stop once depth is reached
             break;
 
-        ParsedURL(url);
+        url = queue.front();
+        queue.pop();
+        UrlHelper::Normalize(url);
         if (CheckRobotsTXT(url)) {
-            printf("\n\n#%ld/%ld, Searching: %s\n", index, queue.size(), queue.front().c_str());
-            const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(queue.front().c_str());
-            std::string html = Renderer::GetHTML(queue.front(), &httpCode);
-            ParseLinks(httpCode, urlChar, queue.front().size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
+            printf("\n\n#%ld/%ld, Searching: %s\n", index + 1, queue.size() + 1, url.c_str());
+            const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(url.c_str());
+            std::string html = Renderer::GetHTML(url, &httpCode);
+            ParseLinks(httpCode, urlChar, url.size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
         } else {
             std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
         }
-        queue.pop();
 
         ++index;
     }
