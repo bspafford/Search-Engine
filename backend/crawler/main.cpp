@@ -38,11 +38,41 @@ struct URLData {
 };
 
 struct Rule {
-    std::string path;
+    std::string rule;
     bool allow = false;
 
-    bool Matches(const std::string& path) {
-        return this->path == path; // temp, simple string matching
+    bool Matches(const std::string_view& path) {
+        // example: */*/temp.html
+        // matches: hello/world/temp.html
+
+        // break path into lists, splitting '/' (hello, world, temp.html)
+        // if list size doesn't match, then not the same, continue searching
+        // if they do match, loop through seeing if each string matches. if '*' then free pass
+
+        std::string_view ruleView = rule;
+        int pathCount = std::count(path.begin(), path.end(), '/');
+        int ruleCount = std::count(ruleView.begin(), ruleView.end(), '/');
+        if (pathCount != ruleCount)
+            return false;
+
+        std::cout << "\n";
+
+        size_t pathPos = 0, rulePos = 0;
+        while (pathPos != std::string::npos) {
+            size_t startPathPos = pathPos;
+            size_t startRulePos = rulePos;
+            pathPos = path.find('/', pathPos + 1);
+            rulePos = rule.find('/', rulePos + 1);
+            std::string_view pathStr = path.substr(startPathPos, pathPos - startPathPos);
+            std::string_view ruleStr = ruleView.substr(startRulePos, rulePos - startRulePos);
+
+            std::cout << "pathStr: " << pathStr << ", ruleStr: " << ruleStr << "\n";
+
+            if (ruleStr != "/*" && ruleStr != "*" && pathStr != ruleStr)
+                return false;
+        }
+
+        return true;
     }
 };
 
@@ -535,9 +565,6 @@ int main(int argc, const char* argv[]) {
     std::cout << "going with depth: " << depth << "\n";
 
     Init();
-
-    UrlHelper::Normalize(url);
-    return 0;
 
     AddURL(url);
 
