@@ -16,10 +16,12 @@
 #include <chrono>
 #include <pqxx/pqxx>
 #include <boost/url.hpp>
+#include <csignal>
 #include "../login.h"
 
 #include "renderJS.h"
 #include "UrlHelper.h"
+#include "indexer.h"
 
 // HNSW (Hierarchical Navigable Small World)
 // Vector database
@@ -55,8 +57,6 @@ struct Rule {
         if (pathCount != ruleCount)
             return false;
 
-        std::cout << "\n";
-
         size_t pathPos = 0, rulePos = 0;
         while (pathPos != std::string::npos) {
             size_t startPathPos = pathPos;
@@ -65,8 +65,6 @@ struct Rule {
             rulePos = rule.find('/', rulePos + 1);
             std::string_view pathStr = path.substr(startPathPos, pathPos - startPathPos);
             std::string_view ruleStr = ruleView.substr(startRulePos, rulePos - startRulePos);
-
-            std::cout << "pathStr: " << pathStr << ", ruleStr: " << ruleStr << "\n";
 
             if (ruleStr != "/*" && ruleStr != "*" && pathStr != ruleStr)
                 return false;
@@ -99,6 +97,9 @@ std::queue<std::string> queue;
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 std::string botName = "*";
 CURLU* u = nullptr;
+
+std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+long idx = 0;
 
 static lxb_status_t callback(const lxb_char_t *data, size_t len, void *ctx) {
     std::string* str = static_cast<std::string*>(ctx);
@@ -537,16 +538,29 @@ void Init() {
     u = curl_url();
     Renderer::Init();
     UrlHelper::Init();
+    Indexer::Init();
     ConnectToDB();
 }
 
 void CleanUp() {
     curl_url_cleanup(u);
     Renderer::CleanUp();
+    Indexer::CleanUp();
+
+    printf("\n\nSearched %ld sites\n", idx - 1);
+    std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
+    std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime)};
+    std::cout << "Took: " << hms.hours().count() << "h " << hms.minutes().count() << "m " << hms.seconds().count() << "s\n";
+    
+}
+
+void signalHandler(int) {
+    CleanUp();
 }
 
 int main(int argc, const char* argv[]) {
-    std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+    std::signal(SIGINT, signalHandler);
+    startTime = std::chrono::steady_clock::now();
 
     std::string url = "https://www.google.com"; // default URL
     long depth = 10; // default depth
@@ -570,16 +584,15 @@ int main(int argc, const char* argv[]) {
 
     std::string html;
     long httpCode;
-    long index = 0;
     while (!queue.empty()) {
-        if (depth >= 0 && index > depth) // has to be a positive depth value, will stop once depth is reached
+        if (depth > 0 && idx > depth) // has to be a positive depth value, will stop once depth is reached
             break;
 
         url = queue.front();
         queue.pop();
         UrlHelper::Normalize(url);
         if (CheckRobotsTXT(url)) {
-            printf("\n\n#%ld/%ld, Searching: %s\n", index + 1, queue.size() + 1, url.c_str());
+            printf("\n\n#%ld/%ld, Searching: %s\n", idx + 1, queue.size() + 1, url.c_str());
             const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(url.c_str());
             std::string html = Renderer::GetHTML(url, &httpCode);
             ParseLinks(httpCode, urlChar, url.size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
@@ -587,14 +600,9 @@ int main(int argc, const char* argv[]) {
             std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
         }
 
-        ++index;
+        ++idx;
     }
 
-    printf("\n\nSearched %ld sites\n", index - 1);
-    std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
-    std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime)};
-    std::cout << "Took: " << hms.hours().count() << "h " << hms.minutes().count() << "m " << hms.seconds().count() << "s\n";
-    
     CleanUp();
 
     return 0;

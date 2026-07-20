@@ -53,6 +53,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(IXWebSocket)
 
+FetchContent_Declare(
+    llama
+    GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
+    GIT_TAG b10068
+)
+FetchContent_MakeAvailable(llama)
+
 add_subdirectory(server)
 add_subdirectory(crawler)
 add_subdirectory(external)
+add_subdirectory(fun)

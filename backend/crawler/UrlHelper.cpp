@@ -86,13 +86,11 @@ void NormalizeSubdomain(std::string& url) {
         size_t pos = url.rfind('.');
         while (pos != std::string::npos) {
             std::string suffix = url.substr(pos + 1); // dont include '.'
-            std::cout << "suffix: \"" << suffix << "\"\n";
             it = pslMap.find(suffix);
             if (it != pslMap.end()) { // found suffix in PSL
                 longestSuffix = suffix;
                 rule = it->second;
-            } else // wasn't in PSL, went too far
-                break;
+            }
 
             pos = url.rfind('.', pos - 1); // increase suffix to see if still valid
         }
@@ -107,7 +105,6 @@ void NormalizeSubdomain(std::string& url) {
     // if exception then the first word before '.' is the domain, everthing after is the suffix
     // if wildcard, then remove the last word, the remaining is the domain
     if (rule.exception) {
-        std::cout << "is exception\n";
         size_t exceptionPos = longestSuffix.find('.');
         // https://asd.www.ck
         // rule: !www.ck
@@ -125,15 +122,11 @@ void NormalizeSubdomain(std::string& url) {
         url = url.substr(0, url.size() - longestSuffix.size() - 1);
     }
 
-    std::cout << "removed suffix: " << url << "\n";
-
     size_t subdomainPos = url.rfind('.');
     if (subdomainPos == std::string::npos)
         url = "www." + url;
 
     url = protocolStr + url + "." + longestSuffix + pathStr;
-
-    std::cout << "normalized: " << url << "\n";
 }
 
 } // UrlHelper
