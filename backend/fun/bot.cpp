@@ -5,6 +5,10 @@
 #include <string>
 #include <cmath>
 
+void silentLog(ggml_log_level level, const char* text, void* user_data) {
+    // do nothing
+}
+
 // Simple L2 normalization
 static void normalize(std::vector<float>& v) {
     float sum = 0.0f;
@@ -69,8 +73,10 @@ llama_model* model;
 llama_context* ctx;
 
 namespace Bot {
-void Init() {
+void Init(std::vector<float>& randWordEmbd, const std::string& randWord) {
     llama_backend_init();
+
+    llama_log_set(silentLog, nullptr);
 
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = 99;
@@ -88,6 +94,8 @@ void Init() {
     ctx_params.n_ctx = 512;
 
     ctx = llama_init_from_model(model, ctx_params);
+
+    randWordEmbd = embed_text(model, ctx, "search_query: " + randWord);
 }
 
 void CleanUp() {
@@ -112,9 +120,8 @@ float CalcCosineSimilarity(const std::vector<float>& emb1, const std::vector<flo
     return dotProduct / (std::sqrt(sum1) * std::sqrt(sum2));
 }
 
-double GetSimilarity(const std::string& input1, const std::string& input2) {
+double GetSimilarity(const std::string& input1, const std::vector<float>& emb) {
     std::vector<float> embedding = embed_text(model, ctx, "search_query: " + input1);
-    std::vector<float> embedding2 = embed_text(model, ctx, "search_query: " + input2);
-    return CalcCosineSimilarity(embedding, embedding2);
+    return CalcCosineSimilarity(embedding, emb);
 }
 }

@@ -18,4 +18,9 @@ target_link_libraries(contexto PRIVATE
     ixwebsocket
     Boost::url
     llama
+    uwebsockets
+    usockets
+    z
+    pthread
+    ctemplate
 )
