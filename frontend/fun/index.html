@@ -1,10 +1,31 @@
 <!DOCTYPE html>
 <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Loading Google Fonts</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+        <link rel="stylesheet" href="index.css">
+    </head>
     <body>
-        <form id="guessForm">
-            <input id="guessInput" type="text" name="guess" required>
-            <input type="submit" value="Guess">
-        </form>
+        <div id="center">
+            <div id="container">
+                <form id="guessForm">
+                    <input id="guessInput" type="text" name="guess" placeholder="Guess..." autocomplete="off" required>
+                </form>
+                <div id="guessContainer"></div>
+            </div>
+        </div>
+        <div id="winScreen">
+            <div>
+                <h1>You Win!</h1>
+                <button onclick="window.location.reload()">Play Again</button>
+            </div>
+        </div>
         <script src="index.js"></script>
+        <script src="guessElement.js"></script>
     </body>
 </html>

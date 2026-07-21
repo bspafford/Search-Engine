@@ -9,6 +9,7 @@
 #include <ctemplate/template_dictionary.h>
 #include <ctemplate/template_enums.h>
 #include <fstream>
+#include <nlohmann/json.hpp>
 
 #include "bot.h"
 
@@ -84,8 +85,12 @@ int main() {
                 bool isCorrect = Guess(std::string(data), score);
                 std::cout << "score thingy: " << score << "\n";
 
+                nlohmann::json json;
+                json["score"] = std::to_string(score);
+                json["correct"] = isCorrect;
+
                 res->writeHeader("Content-Type", "text/html");
-                res->end(std::to_string(score));
+                res->end(json.dump());
             }
         });
     })
