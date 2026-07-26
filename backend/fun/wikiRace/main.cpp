@@ -1,5 +1,6 @@
 #include <iostream>
 #include <queue>
+#include <unordered_set>
 #include <lexbor/core/base.h>
 #include <lexbor/dom/collection.h>
 #include <lexbor/dom/interface.h>
@@ -264,24 +265,9 @@ void BuildConnections(const std::filesystem::path& path) {
     CrawlFiles(std::filesystem::path(path), false);
 }
 
-void GetShortestPath(const std::string& startPath, const std::string& endPath) {
-    // Example Path:
-    // wiki/Search_engine
-    // wiki/Computer_file
-    // wiki/NTFS
-    // wiki/Microsoft
-    // wiki/Nokia
-    // wiki/New_York_Stock_Exchange
-    // wiki/Mutual_fund
-
-    // LGM-30_Minuteman -> Poison_dart_frog (25701 searches, depth 4)
-
-    // Other Random Ideas:
-    // cpu instruction set
-    // search engine
-    // Evolution
-
+void GetShortestPathBruteForce(const std::string& startPath, const std::string& endPath) {
     pqxx::work tx{cx};
+    std::unordered_set<long> visited;
 
     long endId = GetId(tx, endPath, endPath);
     if (endId == -1) {
@@ -303,9 +289,16 @@ void GetShortestPath(const std::string& startPath, const std::string& endPath) {
     while (!q.empty()) {
         auto [id, path] = q.front();
         q.pop();
-        ++searchNum;
 
-        for (auto row : tx.exec(pqxx::prepped("select_all_where_id"), pqxx::params(id))) {
+        // Already searched page, dont search again
+        if (visited.find(id) != visited.end())
+            continue;
+
+        visited.insert(id);
+
+        for (auto row : tx.exec(pqxx::prepped("select_all_start_where_id"), pqxx::params(id))) {
+            ++searchNum;
+
             long fromId = row[0].as<long>();
             long toId = row[1].as<long>();
             std::string fromPath = row[2].as<std::string>();
@@ -331,6 +324,165 @@ void GetShortestPath(const std::string& startPath, const std::string& endPath) {
     std::cout << "Invalid, could not find \"" << endPath << "\" starting from \"" << startPath << "\"\n";
 }
 
+void OutputPath(long startId, long endId, long fromId, long toId, const std::unordered_map<long, long>& start, const std::unordered_map<long, long>& end) {
+    std::cout << "met at: " << fromId << ", ended at: " << toId << "\n";
+
+    std::vector<long> path;
+
+    auto it = start.find(fromId);
+    path.push_back(fromId);
+    while (it != start.end()) {
+        if (it->second == startId) {
+            path.push_back(startId);
+            break;
+        }
+        path.push_back(it->second);
+        it = start.find(it->second);
+    }
+
+    std::reverse(path.begin(), path.end());
+
+    it = end.find(toId);
+    path.push_back(toId);
+    while (it != end.end()) {
+        if (it->second == endId) {
+            path.push_back(it->second);
+            break;
+        }
+        path.push_back(it->second);
+        it = end.find(it->second);
+    }
+
+    std::cout << "\nPath (" << path.size() - 1 << " clicks):\n";
+    for (long id : path)
+        std::cout << pathMap[id] << " (" << id << ")\n";
+}
+
+void GetShortestPath(const std::string& startPath, const std::string& endPath) {
+    // Example Path:
+    // wiki/Search_engine
+    // wiki/Computer_file
+    // wiki/NTFS
+    // wiki/Microsoft
+    // wiki/Nokia
+    // wiki/New_York_Stock_Exchange
+    // wiki/Mutual_fund
+
+    // LGM-30_Minuteman -> Poison_dart_frog (one-way search: 5,280,297 searches, depth 4)
+        // removed duplicates: 1,343,282
+        // multidirectional search: 480
+
+    // "LGM-30_Minuteman" (3326125)
+    // "United_States_Air_Force" (3314494)
+    // "Gold_(color)" (2946006)
+    // "Animal" (2811705)
+    // "Poison_dart_frog" (2638956)
+
+    // Other Random Ideas:
+    // cpu instruction set
+    // search engine
+    // Evolution
+
+    pqxx::work tx{cx};
+
+    long endId = GetId(tx, endPath, endPath);
+    if (endId == -1) {
+        std::cout << "Invalid endId for: \"" << endPath << "\"\n";
+        return;
+    }
+
+    long startId = GetId(tx, startPath, endPath);
+    if (endId == -1) {
+        std::cout << "Invalid startId for: \"" << startPath << "\"\n";
+        return;
+    }
+
+    std::cout << "startId: " << startId << ", endId: " << endId << "\n";
+
+    // start -> ...
+    // ... <- end
+    // look towards eachother, maybe add to set, if item reached from start in endSet, you got path
+    // else if item reached from end in startSet, you got path
+    // do one full depth at a time
+
+    // each end and start:
+    // queue, set (or map)
+
+    long searchNum = 0;
+    std::queue<long> sq, eq;
+    // id, parent id
+    std::unordered_map<long, long> ss, es;
+    sq.push(startId);
+    eq.push(endId);
+    while (!sq.empty() || !eq.empty()) {
+        if (!sq.empty()) {
+            auto sId = sq.front();
+            sq.pop();
+            const pqxx::result sRes = tx.exec(pqxx::prepped("select_all_start_where_id"), pqxx::params(sId));
+            for (auto row : sRes) { // do Start side, until next depth
+                ++searchNum;
+
+                long fromId = row[0].as<long>();
+                long toId = row[1].as<long>();
+                std::string fromPath = row[2].as<std::string>();
+                std::string toPath = row[3].as<std::string>();
+                auto [_, inserted] = ss.emplace(toId, fromId);
+                if (!inserted)
+                    continue;
+
+                // std::cout << "#" << searchNum << ", start from: " << fromPath << " (" << fromId << "), to: " << toPath << " (" << toId << "), depth: " << sPath.size() << "\n";
+                std::cout << "#" << searchNum << ", start from: " << fromPath << " (" << fromId << "), to: " << toPath << " (" << toId << "), depth: \n";
+
+                auto it = es.find(toId); // if already in map
+                if (it != es.end() || toId == endId) { // path was found
+                    // std::cout << "Path was found! Numer of Clicks: " << sPath.size() << ", and searched: " << searchNum << ", the path was:\n";
+                    std::cout << "\nPath was found! Numer of Clicks: , and searched: " << searchNum << ", the path was:\n";
+
+                    OutputPath(startId, endId, fromId, toId, ss, es);
+
+                    return;
+                }
+
+                sq.push(toId);
+            }
+        }
+
+        // do End side, until next depth
+        if (!eq.empty()) {
+            auto eId = eq.front();
+            eq.pop();
+            const pqxx::result eRes = tx.exec(pqxx::prepped("select_all_end_where_id"), pqxx::params(eId));
+            for (auto row : eRes) {
+                ++searchNum;
+
+                long fromId = row[0].as<long>();
+                long toId = row[1].as<long>();
+                std::string fromPath = row[2].as<std::string>();
+                std::string toPath = row[3].as<std::string>();
+                auto [_, inserted] = es.emplace(fromId, toId);
+                if (!inserted)
+                    continue;
+
+                // std::cout << "#" << searchNum << ", end from: " << fromPath << " (" << fromId << "), to: " << toPath << " (" << toId << "), depth: " << ePath.size() << "\n";
+                std::cout << "#" << searchNum << ", end from: " << fromPath << " (" << fromId << "), to: " << toPath << " (" << toId << "), depth: " << "\n";
+
+                auto it = ss.find(fromId); // if already in map
+                if (it != ss.end() || fromId == startId) { // path was found
+                    // std::cout << "Path was found! Numer of Clicks: " << ePath.size() << ", and searched: " << searchNum << ", the path was:\n";
+                    std::cout << "\nPath was found! Numer of Clicks: " << ", and searched: " << searchNum << ", the path was:\n";
+
+                    OutputPath(startId, endId, fromId, toId, ss, es);
+                    return;
+                }
+
+                eq.push(fromId);
+            }
+        }
+    }
+
+    tx.commit();
+    std::cout << "Invalid, could not find \"" << endPath << "\" starting from \"" << startPath << "\"\n";
+}
 
 void ConnectToDB() {
     std::cout << "Connected to " << cx.dbname() << "\n";
@@ -359,13 +511,23 @@ void ConnectToDB() {
     );
 
     cx.prepare(
-        "select_all_where_id",
+        "select_all_start_where_id",
         // "SELECT * FROM connections WHERE id = $1"
         "SELECT c.id, c.connection, wf.path, wt.path "
         "FROM connections c "
         "JOIN wiki wf ON c.id = wf.id "
         "JOIN wiki wt ON c.connection = wt.id "
         "WHERE c.id = $1"
+    );
+
+    cx.prepare(
+        "select_all_end_where_id",
+        // "SELECT * FROM connections WHERE id = $1"
+        "SELECT c.id, c.connection, wf.path, wt.path "
+        "FROM connections c "
+        "JOIN wiki wf ON c.id = wf.id "
+        "JOIN wiki wt ON c.connection = wt.id "
+        "WHERE c.connection = $1"
     );
 }
 
