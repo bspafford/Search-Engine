@@ -9,6 +9,7 @@ add_executable(crawler
 target_include_directories(crawler PRIVATE
     ${PROJECT_SOURCE_DIR}/external/json/include
     ${INSTALL_DIR}/include
+    ${PROJECT_SOURCE_DIR}/secrets
 )
 
 find_package(Boost REQUIRED COMPONENTS url)

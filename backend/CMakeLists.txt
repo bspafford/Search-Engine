@@ -5,16 +5,13 @@ set(CMAKE_CXX_STANDARD 20) # c++20
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# symlink or copy the file to root so Neovim/clangd sees it
-add_custom_target(copy_compile_commands ALL
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "${CMAKE_BINARY_DIR}/compile_commands.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/compile_commands.json"
-    COMMENT "Exposing FetchContent headers to Neovim"
-)
-
 include(FetchContent)
 # include(ExternalProject)
+
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(SKIP_BUILD_TEST_SUITE ON CACHE BOOL "" FORCE)
+set(PQXX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(PQXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     libpqxx
@@ -37,7 +34,6 @@ FetchContent_MakeAvailable(lexbor)
 set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(HTTP_ONLY ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
@@ -63,4 +59,5 @@ FetchContent_MakeAvailable(llama)
 add_subdirectory(server)
 add_subdirectory(crawler)
 add_subdirectory(external)
-add_subdirectory(fun)
+add_subdirectory(fun/contexto)
+add_subdirectory(fun/wikiRace)

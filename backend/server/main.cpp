@@ -8,7 +8,7 @@
 #include <ctemplate/template_dictionary.h>
 #include <ctemplate/template_enums.h>
 #include <fstream>
-#include "../login.h"
+#include "login.h"
 
 std::string ExecuteSQL(const std::string& query);
 
