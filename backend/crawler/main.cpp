@@ -97,6 +97,8 @@ std::queue<std::string> queue;
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 std::string botName = "*";
 CURLU* u = nullptr;
+lxb_html_document_t* document = nullptr;
+lxb_dom_collection_t* collection = nullptr;
 
 std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
 long idx = 0;
@@ -247,7 +249,7 @@ bool ShouldVisit(std::string& url) {
     return hasntVisited;
 }
 
-void ExecuteSQL(long httpCode, std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
+void ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
@@ -428,32 +430,20 @@ bool IsValidURL(const std::string url) {
     return isValid;
 }
 
-void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, const unsigned char* html, size_t htmlLen) {
+void ParseLinks(long httpCode, const std::string& urlStr, const std::string& html) {
     lxb_status_t status;
-    lxb_html_document_t *document;
-    lxb_dom_collection_t *collection;
     lxb_dom_element_t *element;
     lxb_url_parser_t url_parser;
     lxb_url_t *base_url, *url;
     const lxb_char_t *href;
     size_t href_len;
 
-    size_t html_len = htmlLen;
-    size_t base_url_len = urlLen;
-
-    // Step 1: Parse the HTML document
-    document = lxb_html_document_create();
-    if (document == NULL)
-        printf("Something went wrong 1.\n");
-
-    status = lxb_html_document_parse(document, html, html_len);
+    // Parse the HTML document
+    status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(html.c_str()), html.size());
     if (status != LXB_STATUS_OK)
         printf("Something went wrong 2.\n");
 
-    // Step 2: Find all <a> elements
-    collection = lxb_dom_collection_make(&document->dom_document, 128);
-    if (collection == NULL)
-        printf("Something went wrong 3.\n");
+    Indexer::ExtractKeywords(cx, urlStr, document, collection);
 
     status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->body), collection, (const lxb_char_t *) "a", 1);
     if (status != LXB_STATUS_OK)
@@ -462,16 +452,15 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     printf("Found %zu link(s).\n\n", lxb_dom_collection_length(collection));
 
 
-    // Step 3: Initialize the URL parser and parse the base URL
+    // Initialize the URL parser and parse the base URL
     status = lxb_url_parser_init(&url_parser, NULL);
     if (status != LXB_STATUS_OK)
         printf("status is not OK 2.\n");
 
-    base_url = lxb_url_parse(&url_parser, NULL, baseUrlStr, base_url_len);
+    base_url = lxb_url_parse(&url_parser, NULL, reinterpret_cast<const unsigned char*>(urlStr.c_str()), urlStr.size());
     if (base_url == NULL)
         printf("base_url is NULL.\n");
 
-    std::string urlStr(reinterpret_cast<const char*>(baseUrlStr));
     std::cout << "baseURlStr: " << urlStr << ", isorigin? " << IsOriginURL(urlStr) << "\n";
 
     std::string title = GetTitle(document);
@@ -481,7 +470,7 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     if (IsOriginURL(urlStr)) // only add to database if Origin URL
         ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
 
-    // Step 4: Iterate links, extract href, and resolve each URL
+    // Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
         element = lxb_dom_collection_element(collection, i);
 
@@ -511,10 +500,10 @@ void ParseLinks(long httpCode, const unsigned char* baseUrlStr, size_t urlLen, c
     }
 
     // Cleanup
-    lxb_dom_collection_destroy(collection, true);
+    lxb_dom_collection_clean(collection);
     lxb_url_parser_destroy(&url_parser, false);
     lxb_url_memory_destroy(base_url);
-    lxb_html_document_destroy(document);
+    lxb_html_document_clean(document);
 }
 
 void ConnectToDB() {
@@ -538,8 +527,16 @@ void Init() {
     u = curl_url();
     Renderer::Init();
     UrlHelper::Init();
-    Indexer::Init();
+    Indexer::Init(cx);
     ConnectToDB();
+
+    document = lxb_html_document_create();
+    if (document == NULL)
+        printf("Document is NULL\n");
+
+    collection = lxb_dom_collection_make(&document->dom_document, 128);
+    if (collection == NULL)
+        throw std::runtime_error("Collection is NULL\n");
 }
 
 void CleanUp() {
@@ -551,7 +548,6 @@ void CleanUp() {
     std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
     std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime)};
     std::cout << "Took: " << hms.hours().count() << "h " << hms.minutes().count() << "m " << hms.seconds().count() << "s\n";
-    
 }
 
 void signalHandler(int) {
@@ -593,9 +589,8 @@ int main(int argc, const char* argv[]) {
         UrlHelper::Normalize(url);
         if (CheckRobotsTXT(url)) {
             printf("\n\n#%ld/%ld, Searching: %s\n", idx + 1, queue.size() + 1, url.c_str());
-            const unsigned char* urlChar = reinterpret_cast<const unsigned char*>(url.c_str());
             std::string html = Renderer::GetHTML(url, &httpCode);
-            ParseLinks(httpCode, urlChar, url.size(), reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
+            ParseLinks(httpCode, url, html);
         } else {
             std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
         }
