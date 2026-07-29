@@ -57,6 +57,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama)
 
+add_subdirectory(helper)
 add_subdirectory(server)
 add_subdirectory(crawler)
 add_subdirectory(external)

@@ -249,29 +249,31 @@ bool ShouldVisit(std::string& url) {
     return hasntVisited;
 }
 
-void ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
+long ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
     // 5xx: retry later
     if (httpCode >= 300) {
         std::cout << "bad http code: " << httpCode << " on: " << url << ", returning\n";
-        return;
+        return -1;
     }
 
     // if url IS the base, then do it
     if (!IsOriginURL(url))
-        return;
+        return -1;
 
     // start a transaction
     pqxx::work tx{cx};
 
     bool addTrailingSlash = url.back() != '/'; // add trailing slash if it doesn't have one already
     std::cout << "adding to DB!: " << url << (addTrailingSlash ? "/" : "") << "\n";
-    tx.exec(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon));
+    long urlId = tx.query_value<long>(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon));
 
     // Commit the transaction
     tx.commit();
+
+    return urlId;
 }
 
 // may add url to search further
@@ -443,8 +445,6 @@ void ParseLinks(long httpCode, const std::string& urlStr, const std::string& htm
     if (status != LXB_STATUS_OK)
         printf("Something went wrong 2.\n");
 
-    Indexer::ExtractKeywords(cx, urlStr, document, collection);
-
     status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->body), collection, (const lxb_char_t *) "a", 1);
     if (status != LXB_STATUS_OK)
         printf("status is not OK 1.\n");
@@ -467,8 +467,11 @@ void ParseLinks(long httpCode, const std::string& urlStr, const std::string& htm
     std::string description = GetDescription(document);
     std::string favicon = DownloadFavicon(document, urlStr);
 
-    if (IsOriginURL(urlStr)) // only add to database if Origin URL
-        ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
+
+    if (IsOriginURL(urlStr)) { // only add to database if Origin URL
+        long urlId = ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
+        Indexer::ExtractKeywords(cx, urlId, urlStr, document, collection);
+    }
 
     // Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
@@ -519,7 +522,8 @@ void ConnectToDB() {
         "description = EXCLUDED.description, "
         "contentHash = EXCLUDED.contentHash, "
         "lastVisited = NOW(), "
-        "favicon = EXCLUDED.favicon"
+        "favicon = EXCLUDED.favicon "
+        "RETURNING id"
     );
 }
 

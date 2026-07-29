@@ -9,6 +9,7 @@
 #include <ctemplate/template_enums.h>
 #include <fstream>
 #include "login.h"
+#include "helper.h"
 
 std::string ExecuteSQL(const std::string& query);
 
@@ -70,11 +71,51 @@ std::string ExecuteSQL(const std::string& query) {
     // start a transaction
     pqxx::work tx{cx};
 
-    std::string pattern = "%" + query + "%";
-    auto result = tx.exec("SELECT * FROM siteData WHERE title ILIKE $1", pqxx::params(pattern));
+    // get / parse search: remove special characters, uneeded words, same as function to put words into sql db
+    // then select * WHERE word = search[i]
+        // FROM urls u JOIN ... JOIN ... WHERE w.word IN ('...', '...', ...);
+        // rank by who has most words from search term
+    // rank in order of who has most words in search term
+        // SELECT url.id COUNT(*) AS score ... GROUP BY uw.urlId ORDER BY score DESC;
+        // and higher by who has a higher count from the search terms
+    std::unordered_map<std::string, int> counts;
+    Helper::ParseText(query, counts);
+    std::string sql = "SELECT u.url, u.title, u.description, u.favicon, COUNT(DISTINCT w.word) AS matched_words, SUM(ii.count) AS frequency "
+                      "FROM words w "
+                      "JOIN inverted_index ii ON w.id = ii.wordid "
+                      "JOIN siteData u ON ii.urlid = u.id "
+                      "WHERE w.word IN (";
+
+    pqxx::params params;
+    bool first = true;
+    int i = 0;
+    for (const auto& [word, _] : counts) {
+        if (!first)
+            sql += ", ";
+        first = false;
+
+        sql += "$" + std::to_string(++i);
+        params.append(word);
+    }
+
+    sql += ") "
+           "GROUP BY u.id, u.url "
+           "ORDER BY matched_words DESC, frequency DESC;";
+
+    std::cout << "sql:\n" << sql << "\n\n";
+
+    pqxx::result result = tx.exec(sql, params);
 
     ctemplate::TemplateDictionary dict("search");
     ctemplate::Template* tpl = ctemplate::Template::GetTemplate(searchPageTpl, ctemplate::DO_NOT_STRIP);
+
+    std::cout << "result:\n";
+    for (auto row : result) {
+        for (auto field : row)
+            std::cout << field.c_str() << "\t";
+        std::cout << "\n";
+    }
+    std::cout << "\n\n";
 
     std::string itemHtml;
     std::cout << "found " << result.size() << " result(s)\n";

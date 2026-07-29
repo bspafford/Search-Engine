@@ -216,7 +216,15 @@ void LaunchChromium() {
 
     std::cout << "data: " << data << "\n";
     nlohmann::json json = nlohmann::json::parse(data);
-    StartClient(json[0]["webSocketDebuggerUrl"]);
+    int idx = 0;
+    for (int i = 0; i < json.size(); ++i) {
+        if (json[i]["type"] == "page") {
+            idx = i;
+            break;
+        }
+    }
+
+    StartClient(json[idx]["webSocketDebuggerUrl"]);
 
     while (!finishedSetup)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

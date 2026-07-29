@@ -10,7 +10,8 @@
 
 namespace Indexer {
     void Init(pqxx::connection& cx);
-    void ExtractKeywords(pqxx::connection& cx, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection);
+    // returns the ID to the url
+    void ExtractKeywords(pqxx::connection& cx, long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection);
     void CleanUp();
     float GetSimilarity(const std::string& input1, const std::string& input2);
 }

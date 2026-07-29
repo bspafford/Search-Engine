@@ -10,11 +10,13 @@ target_include_directories(crawler PRIVATE
     ${PROJECT_SOURCE_DIR}/external/json/include
     ${INSTALL_DIR}/include
     ${PROJECT_SOURCE_DIR}/secrets
+    ${PROJECT_SOURCE_DIR}/helper
 )
 
 find_package(Boost REQUIRED COMPONENTS url)
 
 target_link_libraries(crawler PRIVATE
+    helper
     lexbor
     libcurl
     pqxx
