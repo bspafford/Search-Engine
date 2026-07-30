@@ -93,7 +93,9 @@ struct RobotInfo {
 
 std::unordered_set<std::string> visited;
 std::unordered_map<std::string, RobotInfo> robotsTXT;
+int maxQueueSize = 5;
 std::queue<std::string> queue;
+std::vector<std::string> urls;
 pqxx::connection cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD);
 std::string botName = "*";
 CURLU* u = nullptr;
@@ -276,12 +278,69 @@ long ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::
     return urlId;
 }
 
+// gets top {maxQueueSize} from queue DB and inserts into queue
+void PopulateSiteQueue() {
+    std::cout << "PopulateSiteQueue\n";
+    pqxx::work tx{cx};
+    // std::string sql = "SELECT * FROM siteData LIMIT " + std::to_string(maxQueueSize);
+    std::string sql = "DELETE FROM visitQueue WHERE url IN (SELECT url FROM visitQueue LIMIT 100) "
+                      "RETURNING url;";
+
+    pqxx::result result = tx.exec(sql);
+
+    for (pqxx::row_ref row : result) {
+        queue.push(row["url"].as<std::string>());
+    }
+
+    // if DB was empty, populate from urls list instead
+    if (queue.empty()) {
+        for (const std::string& url : urls)
+            queue.push(url);
+        urls.clear();
+    }
+
+    tx.commit();
+}
+
+// takes data from urls and inserts {maxQueueSize} to queue DB
+void InsertSiteQueue() {
+    std::cout << "InsertSiteQueue, url size: " << urls.size() << ", queue: " << queue.size() << "\n";
+    std::string sql = "INSERT INTO visitQueue (url) SELECT x.url FROM (VALUES ";
+
+    pqxx::work tx{cx};
+    for (int i = 0; i < urls.size(); ++i) {
+        if (i != 0)
+            sql += ", ";
+
+        sql += "(" + tx.quote(urls[i]) + ")";
+    }
+
+    sql += ") AS x(url) "
+           "WHERE NOT EXISTS ("
+           "    SELECT 1 FROM siteData s WHERE s.url = x.url"
+           ")"
+           "ON CONFLICT (url) DO NOTHING;";
+
+    std::cout << "sql:\n" << sql << "\n\n";
+
+    tx.exec(sql);
+    tx.commit();
+
+    // clear urls
+    urls.clear();
+}
+
 // may add url to search further
 // wont add if already searched through or isn't allowed to visit
 void AddURL(std::string& url) {
     if (ShouldVisit(url)) { // if haven't already seen url
         visited.insert(url);
-        queue.push(url);
+        urls.push_back(url);
+        if (urls.size() >= maxQueueSize) {
+            // upload those to db
+            // remove the from queue
+            InsertSiteQueue();
+        }
 
         // if haven't visited origin url then add to queue
         std::string origin = ExtractOrigin(url, nullptr);
@@ -304,8 +363,10 @@ std::string GetTitle(lxb_html_document_t* document) {
 
     size_t titleLen;
     lxb_dom_element_t* titleElement = lxb_dom_collection_element(title, 0);
-    if (!titleElement)
+    if (!titleElement) {
+        lxb_dom_collection_destroy(title, true);
         return "";
+    }
 
     lxb_char_t* titleChars = lxb_dom_node_text_content(lxb_dom_interface_node(titleElement), &titleLen);
     std::string titleString(reinterpret_cast<const char*>(titleChars));
@@ -503,10 +564,16 @@ void ParseLinks(long httpCode, const std::string& urlStr, const std::string& htm
     }
 
     // Cleanup
-    lxb_dom_collection_clean(collection);
+    // lxb_dom_collection_clean(collection);
+    lxb_dom_collection_destroy(collection, true);
+    collection = lxb_dom_collection_make(&document->dom_document, 128);
+
     lxb_url_parser_destroy(&url_parser, false);
     lxb_url_memory_destroy(base_url);
-    lxb_html_document_clean(document);
+
+    // lxb_html_document_clean(document);
+    lxb_html_document_destroy(document);
+    document = lxb_html_document_create();
 }
 
 void ConnectToDB() {
@@ -552,6 +619,16 @@ void CleanUp() {
     std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
     std::chrono::hh_mm_ss hms{std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime)};
     std::cout << "Took: " << hms.hours().count() << "h " << hms.minutes().count() << "m " << hms.seconds().count() << "s\n";
+
+    if (collection) {
+        lxb_dom_collection_destroy(collection, true);
+        collection = nullptr;
+    }
+
+    if (document) {
+        lxb_html_document_destroy(document);
+        document = nullptr;
+    }
 }
 
 void signalHandler(int) {
@@ -580,16 +657,20 @@ int main(int argc, const char* argv[]) {
 
     Init();
 
+    // setup initial queue
     AddURL(url);
+    PopulateSiteQueue();
 
     std::string html;
     long httpCode;
+
     while (!queue.empty()) {
         if (depth > 0 && idx > depth) // has to be a positive depth value, will stop once depth is reached
             break;
 
         url = queue.front();
-        queue.pop();
+        queue.pop(); // keep queue
+
         UrlHelper::Normalize(url);
         if (CheckRobotsTXT(url)) {
             printf("\n\n#%ld/%ld, Searching: %s\n", idx + 1, queue.size() + 1, url.c_str());
@@ -598,6 +679,9 @@ int main(int argc, const char* argv[]) {
         } else {
             std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
         }
+
+        if (queue.size() == 0)
+            PopulateSiteQueue();
 
         ++idx;
     }

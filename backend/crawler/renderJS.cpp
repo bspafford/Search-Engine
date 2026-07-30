@@ -1,4 +1,5 @@
 #include "renderJS.h"
+#include "helper.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -87,16 +88,31 @@ void RenderedHTML(const nlohmann::json& json) {
     gettingHTML = false;
 }
 
+void WaitFor(bool& con, const std::string& debugStr) {
+    int sleepTime = 0;
+    while (con) { // wait until received rendered HTML body
+        if (sleepTime >= timeoutTime * 1000) {
+            std::cout << "Took too long, timing out: " << debugStr << "\n";
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++sleepTime;
+    }
+}
+
 // returns the rendered html
 std::string GetHTML(const std::string& url, long* httpCode) {
+    Helper::StartTimer("Getting HTML");
+
     gettingHTML = true;
     NavigatePage(webSocket, url);
     if (httpCode)
         *httpCode = 200; // temp
 
     std::cout << "navigated, now gonig to wait\n";
-    while (gettingHTML) // wait until received rendered HTML body
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    WaitFor(gettingHTML, "Navigating");
+
+    Helper::EndTimer("Finished Getting HTML");
 
     return htmlBody;
 }
@@ -226,8 +242,7 @@ void LaunchChromium() {
 
     StartClient(json[idx]["webSocketDebuggerUrl"]);
 
-    while (!finishedSetup)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    WaitFor(finishedSetup, "Setup");
 }
 
 void CleanUp() {

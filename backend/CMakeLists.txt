@@ -14,6 +14,11 @@ set(SKIP_BUILD_TEST_SUITE ON CACHE BOOL "" FORCE)
 set(PQXX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(PQXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
+if(CMAKE_BUILD_TYPE MATCHES "Debug")
+  add_compile_options(-fsanitize=address -g -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address)
+endif()
+
 FetchContent_Declare(
     libpqxx
     GIT_REPOSITORY https://github.com/jtv/libpqxx

@@ -1,10 +1,14 @@
 #include "helper.h"
 
+#include <iostream>
 #include <algorithm>
 #include <fstream>
 #include <unordered_set>
+#include <chrono>
 
 std::unordered_set<std::string> stopWords;
+
+std::chrono::steady_clock::time_point durationTime;
 
 void SetupStopWords() {
     if (!stopWords.empty())
@@ -55,5 +59,24 @@ void ParseText(std::string text, std::unordered_map<std::string, int>& counts) {
         if (!word.empty() && IsImportantWord(word))
             ++counts[std::string(word)];
     }
+}
+
+void StartTimer(const std::string& debugStr) {
+    durationTime = std::chrono::steady_clock::now();
+
+    std::cout << "\033[32mStarted: " << debugStr << "\033[0m\n";
+}
+
+void EndTimer(const std::string& debugStr) {
+    auto elapsed = duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - durationTime);
+
+    auto total = elapsed.count();
+
+    int h  = total / 3'600'000;
+    int m  = (total % 3'600'000) / 60'000;
+    int s  = (total % 60'000) / 1'000;
+    int ms = total % 1'000;
+
+    std::cout << "\033[32m" << debugStr << " | " << h << "h " << m << "m " << s << "s " << ms << "ms\033[0m\n";
 }
 } // Helper
