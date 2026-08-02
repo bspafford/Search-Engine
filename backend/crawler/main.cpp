@@ -2,14 +2,14 @@
 #include <lexbor/core/base.h>
 #include <lexbor/dom/collection.h>
 #include <lexbor/dom/interface.h>
+#include <lexbor/html/html.h>
+#include <lexbor/url/url.h>
 #include <iostream>
 #include <fstream>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <curl/curl.h>
-#include <lexbor/html/html.h>
-#include <lexbor/url/url.h>
 #include <type_traits>
 #include <unordered_set>
 #include <queue>
@@ -304,7 +304,6 @@ void PopulateSiteQueue() {
 
 // takes data from urls and inserts {maxQueueSize} to queue DB
 void InsertSiteQueue() {
-    std::cout << "InsertSiteQueue, url size: " << urls.size() << ", queue: " << queue.size() << "\n";
     std::string sql = "INSERT INTO visitQueue (url) SELECT x.url FROM (VALUES ";
 
     pqxx::work tx{cx};
@@ -320,8 +319,6 @@ void InsertSiteQueue() {
            "    SELECT 1 FROM siteData s WHERE s.url = x.url"
            ")"
            "ON CONFLICT (url) DO NOTHING;";
-
-    std::cout << "sql:\n" << sql << "\n\n";
 
     tx.exec(sql);
     tx.commit();
@@ -674,7 +671,7 @@ int main(int argc, const char* argv[]) {
         UrlHelper::Normalize(url);
         if (CheckRobotsTXT(url)) {
             printf("\n\n#%ld/%ld, Searching: %s\n", idx + 1, queue.size() + 1, url.c_str());
-            std::string html = Renderer::GetHTML(url, &httpCode);
+            std::string html = Renderer::GetHTML(document, url, &httpCode);
             ParseLinks(httpCode, url, html);
         } else {
             std::cout << "Skipping: \"" << url << "\", against robots.txt\n";

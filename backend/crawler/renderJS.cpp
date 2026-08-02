@@ -16,6 +16,11 @@
 #include <unistd.h>
 #include <sys/prctl.h>
 #include <openssl/sha.h>
+#include <lexbor/core/base.h>
+#include <lexbor/dom/collection.h>
+#include <lexbor/dom/interface.h>
+#include <lexbor/html/html.h>
+#include <lexbor/url/url.h>
 
 std::string debuggerUrl = "";
 pid_t pid = -1;
@@ -31,6 +36,10 @@ std::string htmlBody = "";
 
 bool finishedSetup = false;
 
+// wait for things like title, favicon, description, open graph tags?
+// stop the page downloading/stop the window, but dont close window to reopen, just see if i can stop or goto new
+// maybe check to see if there is enough html first. If there is then skip rendering all together, otherwise render
+
 namespace Renderer {
 static size_t write_data(char *contents, size_t size, size_t nmemb, void *userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
@@ -40,7 +49,7 @@ static size_t write_data(char *contents, size_t size, size_t nmemb, void *userp)
 size_t write_byte_data(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t total = size * nmemb;
     auto* buffer = static_cast<std::vector<unsigned char>*>(userp);
-    
+
     unsigned char* bytes = static_cast<unsigned char*>(contents);
     buffer->insert(buffer->end(), bytes, bytes + total);
 
@@ -100,9 +109,124 @@ void WaitFor(bool& con, const std::string& debugStr) {
     }
 }
 
+bool HasTitle(lxb_html_document_t* document) {
+    // get title
+    lxb_dom_collection_t* title = lxb_dom_collection_make(&document->dom_document, 1);
+    if (!title) {
+        lxb_dom_collection_destroy(title, true);
+        return false;
+    }
+
+    lxb_status_t status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), title, (const lxb_char_t*)"title", 5);
+    lxb_dom_collection_destroy(title, true);
+    return status == LXB_STATUS_OK;
+}
+
+bool HasDescription(lxb_html_document_t* document) {
+    lxb_dom_element_t* element;
+    const lxb_char_t* name;
+    size_t len;
+
+    lxb_dom_collection_t* description = lxb_dom_collection_make(&document->dom_document, 32);
+    if (!description) {
+        printf("description is null");
+        return false;
+    }
+
+    lxb_status_t status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), description, (const lxb_char_t*)"meta", 4);
+    if (status != LXB_STATUS_OK) {
+        lxb_dom_collection_destroy(description, true);
+        printf("No description found");
+        return false;
+    }
+
+    for (int i = 0; i < lxb_dom_collection_length(description); ++i) {
+        element = lxb_dom_collection_element(description, i);
+        name = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "name", 4, &len);
+        if (!name) // was no name attribute
+            continue;
+
+        if (std::strcmp(reinterpret_cast<const char*>(name), "description") != 0)
+            continue;
+
+        lxb_dom_collection_destroy(description, true);
+        return true;
+    }
+
+    // Cleanup.
+    lxb_dom_collection_destroy(description, true);
+    return false;
+}
+
+bool HasFavicon(lxb_html_document_t* document) {
+    lxb_dom_element_t* element;
+    const lxb_char_t* rel;
+    size_t len;
+
+    lxb_dom_collection_t* favicon = lxb_dom_collection_make(&document->dom_document, 32);
+    if (!favicon) {
+        printf("favicon is null");
+        return false;
+    }
+
+    lxb_status_t status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), favicon, (const lxb_char_t*)"link", 4);
+    if (status != LXB_STATUS_OK) {
+        lxb_dom_collection_destroy(favicon, true);
+        printf("No favicon found");
+        return false;
+    }
+
+    std::cout << "favicon length: " << lxb_dom_collection_length(favicon) << "\n";
+    for (int i = 0; i < lxb_dom_collection_length(favicon); ++i) {
+        element = lxb_dom_collection_element(favicon, i);
+        rel = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "rel", 3, &len);
+
+        if (!rel) // was no name attribute
+            continue;
+
+        if (std::strcmp(reinterpret_cast<const char*>(rel), "icon") != 0)
+            continue;
+
+        lxb_dom_collection_destroy(favicon, true);
+        return true;
+    }
+
+    /* Cleanup. */
+    lxb_dom_collection_destroy(favicon, true);
+    std::cout << "No favicon found 1\n";
+    return false;
+}
+
+// Determines if there is enough content in the HTML or if it should be rendered
+// Checks things like title, favicon, description, etc
+bool HasEnoughContent(lxb_html_document_t* document, const std::string& html) {
+    lxb_status_t status;
+
+    // Parse the HTML document
+    status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(html.c_str()), html.size());
+    if (status != LXB_STATUS_OK)
+        printf("Something went wrong 2.\n");
+
+    bool title = HasTitle(document);
+    bool description = HasDescription(document);
+    bool favicon = HasFavicon(document);
+
+    // Cleanup
+    lxb_html_document_clean(document);
+
+    std::cout << "\033[34mtitle: " << title << ", description: " << description << ", favicon: " << favicon << "\n\033[0m";
+    return title && description && favicon;
+}
+
 // returns the rendered html
-std::string GetHTML(const std::string& url, long* httpCode) {
+std::string GetHTML(lxb_html_document_t* document, const std::string& url, long* httpCode) {
     Helper::StartTimer("Getting HTML");
+
+    std::string html = CurlGet(url, httpCode);
+    if (HasEnoughContent(document, html)) {
+        std::cout << "\033[34mWas enough, didn't need to render\n\033[0m";
+        return html;
+    }
 
     gettingHTML = true;
     NavigatePage(webSocket, url);
@@ -175,6 +299,34 @@ void Init() {
         execlp("chromium",
             "chromium",
             "--headless=new",
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--disable-dev-shm-usage",
+            "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
+            "--disable-sync",
+            "--disable-notifications",
+            "--disable-client-side-phishing-detection",
+            "--disable-domain-reliability",
+            "--disable-features=OptimizationHints,InterestFeedContentSuggestions",
+            "--metrics-recording-only",
+            "--mute-audio",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--use-mock-keychain",
+            "--hide-scrollbars",
+            "--blink-settings=imagesEnabled=false",
             "--remote-debugging-port=9222",
             "--remote-allow-origins=ws://127.0.0.1:9222",
             nullptr
