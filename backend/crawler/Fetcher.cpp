@@ -1,0 +1,143 @@
+#include "Fetcher.h"
+#include "UrlHelper.h"
+
+#include <iostream>
+
+void Fetcher::Init() {
+    std::cout << "\033[33mInit Fetcher\n\033[0m";
+    curl = curl_easy_init();
+
+    // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutTime);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, totalTimeoutTime);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
+}
+
+std::unordered_map<std::string, RobotInfo>::iterator Fetcher::ParseRobotsTXT(const std::string& origin, std::string_view robotsText) {
+    RobotInfo robotInfo;
+    robotInfo.fetchedAt = std::chrono::steady_clock::now();
+    auto [it, success] = robotsTXT.insert({ origin, robotInfo });
+
+    size_t start = 0;
+    bool active = false;
+    bool inUserAgentBlock = false;
+    while (start < robotsText.size()) {
+        size_t end = robotsText.find('\n', start);
+
+        if (end == std::string_view::npos)
+            end = robotsText.size();
+
+        std::string_view line = trim(robotsText.substr(start, end - start));
+
+        if (!line.empty()) {
+            // parse line
+            auto colon = line.find(':');
+            std::string_view key = trim(line.substr(0, colon));
+            std::string_view value = trim(line.substr(colon + 1));
+
+            if (key == "User-agent") {
+                // can have something like:
+                //      User-agent: *
+                //      User-agent: Yandex
+                // so right after its declaring another bot. meaning the program should realize that it needs to see: set bot, (dis)allow, set bot, for it to actually change bots
+                if (!inUserAgentBlock) {
+                    active = false;
+                    inUserAgentBlock = true;
+                }
+
+                if (value == botName)
+                    active = true;
+
+            } else if (key == "Sitemap") {
+                it->second.sitemaps.push_back(std::string(value));
+                inUserAgentBlock = false;
+            } else if (active) {
+                bool allow = key == "Allow";
+                it->second.rules.push_back({ std::string(value), allow });
+                inUserAgentBlock = false;
+            }
+        }
+
+        start = end + 1;
+    }
+
+    return it;
+}
+
+// Check to see if url is allowed to be crawled
+// Will also find, parse, and add to RobotsTXT map if not already in there
+bool Fetcher::CheckRobotsTXT(const std::string& url) {
+    std::string path;
+    std::string origin = UrlHelper::ExtractOrigin(url, &path);
+
+    // if origin already inside robotsTXT, then find path that fits to rule. If non, i guess allow
+    // if not already inside map, then go to origin + "/robots.txt", parse file, and add to map, then check
+    auto it = robotsTXT.find(origin);
+    if (it == robotsTXT.end()) { // wasn't found
+        // go to (origin) + "/robots.txt"
+        std::cout << "getting robots.txt for: " << origin << "\n";
+        long httpCode;
+        std::string output = CurlGet(std::string(origin + "robots.txt"), &httpCode);
+
+        if (httpCode >= 300 || httpCode == 0) {
+            robotsTXT.insert({ origin, {} }); // add blank input, didn't find robots.txt
+            std::cout << "problem finding \"" << origin << "robots.txt\", http code: " << httpCode << ", returning\n";
+            return true;
+        }
+
+        std::cout << "got it, now parsing\n";
+
+        // parse file
+        it = ParseRobotsTXT(origin, output);
+
+        std::cout << "finished parsing\n";
+    }
+
+    bool allow;
+    return it->second.FindRule(path);
+}
+
+std::string_view Fetcher::trim(std::string_view s) {
+    while (!s.empty() && std::isspace(s.front()))
+        s.remove_prefix(1);
+
+    while (!s.empty() && std::isspace(s.back()))
+        s.remove_suffix(1);
+
+    size_t pos = s.find('#');
+    if (pos != std::string_view::npos)
+        s = s.substr(0, pos);
+
+    return s;
+}
+
+std::string Fetcher::CurlGet(const std::string& url, long* httpCode) {
+    std::string html = "";
+    CURLcode res;
+
+    std::cout << "curl: " << curl << "\n";
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &html);
+
+    res = curl_easy_perform(curl); // perform request
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Transfer failed: %s\n", curl_easy_strerror(res));
+        throw std::runtime_error("Failed!, res is not ok\n");
+    }
+
+    // extract the server's HTTP response code
+    if (httpCode) {
+        *httpCode = 0; // init to 0
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, httpCode);
+        printf("HTTP Status Code: %ld, for: %s\n\n", *httpCode, url.c_str());
+    }
+
+    return html;
+}
+
+size_t Fetcher::write_data(char *contents, size_t size, size_t nmemb, void *userp) {
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}

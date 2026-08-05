@@ -8,10 +8,12 @@
 #include <lexbor/html/html.h>
 #include <lexbor/url/url.h>
 
+class ThreadPool;
+
 namespace Indexer {
-    void Init(pqxx::connection& cx);
+    void Init();
     // returns the ID to the url
-    void ExtractKeywords(pqxx::connection& cx, long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection);
+    void ExtractKeywords(ThreadPool* databasePool, long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection);
     void CleanUp();
     float GetSimilarity(const std::string& input1, const std::string& input2);
 }

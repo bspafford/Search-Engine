@@ -129,4 +129,23 @@ void NormalizeSubdomain(std::string& url) {
     url = protocolStr + url + "." + longestSuffix + pathStr;
 }
 
+std::string ExtractOrigin(const std::string& url, std::string* path) {
+    // Find "://"
+    std::size_t schemeEnd = url.find("://");
+    if (schemeEnd == std::string::npos)
+        throw std::runtime_error("Invalid URL (ExtractOrigin): " + url);
+
+    // Find first '/' after the host
+    std::size_t pathStart = url.find('/', schemeEnd + 3);
+
+    // make sure to have trailing '/' on URLs
+    if (pathStart == std::string::npos) {
+        if (path) *path = "/";
+        bool addTrailing = url.back() != '/';
+        return url + std::string(addTrailing ? "/" : "");
+    } else {
+        if (path) *path = url.substr(pathStart);
+        return url.substr(0, pathStart) + "/";
+    }
+}
 } // UrlHelper

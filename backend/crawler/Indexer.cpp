@@ -1,13 +1,13 @@
-#include "indexer.h"
+#include "Indexer.h"
 #include "helper.h"
-#include "lexbor/html/interface.h"
-#include "lexbor/tag/const.h"
-#include "llama.h"
+#include "Database.h"
+#include "ThreadPool.h"
 
 #include <iostream>
 #include <vector>
 #include <string>
 #include <cmath>
+#include <llama.h>
 #include <lexbor/core/base.h>
 #include <lexbor/dom/collection.h>
 #include <lexbor/dom/interface.h>
@@ -105,87 +105,19 @@ void Traverse(lxb_dom_node_t* node, std::unordered_map<std::string, int>& counts
         Traverse(child, counts);
 }
 
-// returns urlId
-void AddToDB(pqxx::connection& cx, long urlId, const std::string& url, std::unordered_map<std::string, int> counts) {
-    // start a transaction
-    pqxx::work tx{cx};
-
-    for (auto& [word, count] : counts) {
-        int wordId = tx.query_value<int>(pqxx::prepped("insertWord"), pqxx::params(word));
-        // std::cout << "adding \"" << word << "\" (" << wordId << "), url: \"" << url << " (" << urlId << "), count: " << count << "\n";
-        tx.exec(pqxx::prepped("insertInvertedIndex"), pqxx::params(wordId, urlId, count));
-    }
-
-    // insert url, if not already, into db and get id
-    // insert word, if not already, into db and get id
-    // insert connection into list, with count
-
-    // Commit the transaction
-    tx.commit();
-}
-
 namespace Indexer {
-void ExtractKeywords(pqxx::connection& cx, long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection) {
+void ExtractKeywords(ThreadPool* databasePool, long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection) {
     std::unordered_map<std::string, int> counts;
     lxb_dom_node_t* root = lxb_dom_interface_node(document);
     Traverse(root, counts);
 
-    AddToDB(cx, urlId, url, counts);
-
-    /*
-    std::cout << "keywords\n";
-
-    lxb_dom_element_t *element;
-    lxb_dom_node_t* node;
-    lxb_char_t* text;
-
-    lxb_status_t status = lxb_html_document_parse(document, reinterpret_cast<const unsigned char*>(html.c_str()), html.size());
-    if (status != LXB_STATUS_OK)
-        printf("Something went wrong 2.\n");
-
-    std::vector<std::string> tags = { "p", "h1", "h2", "h3", "h4", "h5", "h6", "title" };
-    for (std::string& tag : tags) {
-        status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->body), collection, reinterpret_cast<const unsigned char*>(tag.c_str()), tag.size());
-        if (status != LXB_STATUS_OK)
-            printf("status is not OK 1.\n");
-
-        for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
-            element = lxb_dom_collection_element(collection, i);
-
-            node = lxb_dom_interface_node(element);
-            size_t len;
-            text = lxb_dom_node_text_content(node, &len);
-            if (text) {
-                std::cout << tag << ": " << std::string(reinterpret_cast<char*>(text), len) << "\n";
-            }
-        }
-    }
-
-    // Cleanup
-    lxb_dom_collection_clean(collection);
-    lxb_html_document_clean(document);
-    */
+    databasePool->Enqueue([urlId, url, counts] {
+        Database& database = Database::GetDatabase();
+        database.IndexerAddToDB(urlId, url, counts);
+    });
 }
 
-void SetupDB(pqxx::connection& cx) {
-    cx.prepare(
-        "insertWord",
-        "INSERT INTO words (word) VALUES ($1) "
-        "ON CONFLICT (word) "
-        "DO UPDATE SET word = EXCLUDED.word "
-        "RETURNING id"
-    );
-
-    cx.prepare(
-        "insertInvertedIndex",
-        "INSERT INTO inverted_index (wordId, urlId, count) VALUES ($1, $2, $3) "
-        "ON CONFLICT (wordId, urlId) DO NOTHING"
-    );
-}
-
-void Init(pqxx::connection& cx) {
-    SetupDB(cx);
-
+void Init() {
     llama_backend_init();
 
     llama_model_params model_params = llama_model_default_params();

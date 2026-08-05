@@ -1,8 +1,12 @@
 add_executable(crawler
     main.cpp
-    renderJS.cpp
+    Renderer.cpp
     UrlHelper.cpp
-    indexer.cpp
+    Indexer.cpp
+    ThreadPool.cpp
+    Fetcher.cpp
+    Database.cpp
+    Parser.cpp
 )
 
 # linke to executable
