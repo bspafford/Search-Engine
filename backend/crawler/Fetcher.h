@@ -1,10 +1,13 @@
 #pragma once
 
+#include "ThreadPool.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <chrono>
 #include <curl/curl.h>
+#include <mutex>
 
 struct Rule {
     std::string rule;
@@ -60,11 +63,14 @@ struct RobotInfo {
 
 class Fetcher {
 public:
+    static void InitPool(int threads);
     void Init();
 
     std::unordered_map<std::string, RobotInfo>::iterator ParseRobotsTXT(const std::string& origin, std::string_view robotsText);
     bool CheckRobotsTXT(const std::string& url);
     std::string CurlGet(const std::string& url, long* httpCode);
+
+    static void Fetch(std::string url);
 
     static Fetcher& GetFetcher() {
         thread_local Fetcher fetcher;
@@ -81,10 +87,19 @@ private:
 
     std::string_view trim(std::string_view s);
 
-    std::unordered_map<std::string, RobotInfo> robotsTXT;
-    std::string botName = "*";
-
+    static inline long idx = 0;
     CURL* curl = nullptr;
     float timeoutTime = 10.f;
     float totalTimeoutTime = 30.f;
+
+    static inline std::mutex robotsMutex;
+    static inline std::mutex idxMutex;
+    static inline std::unordered_map<std::string, RobotInfo> robotsTXT;
+    static inline std::string botName = "*";
+    static std::unordered_map<std::string, RobotInfo>::iterator RobotsInsert(const std::string& robotsName, RobotInfo robotInfo);
+    static std::unordered_map<std::string, RobotInfo>::iterator RobotsFind(const std::string& robotsName);
+    static std::unordered_map<std::string, RobotInfo>::iterator RobotsEnd();
+    static long IdxIncrement();
+
+    static inline ThreadPool* threadPool = nullptr;
 };

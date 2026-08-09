@@ -1,10 +1,16 @@
 #include "Database.h"
 #include "login.h"
+#include "ThreadPool.h"
 
 #include <iostream>
+#include <stdexcept>
 
 Database::Database() : cx("host=localhost dbname=SearchEngine user=" + USER + " password=" + PASSWORD) {
 
+}
+
+void Database::InitPool(int threads) {
+    threadPool = new ThreadPool(threads);
 }
 
 void Database::Init() {
@@ -42,52 +48,109 @@ void Database::Init() {
 // gets top {maxQueueSize} from queue DB and inserts into queue
 void Database::PopulateSiteQueue() {
     std::cout << "PopulateSiteQueue\n";
-    pqxx::work tx{cx};
-    // std::string sql = "SELECT * FROM siteData LIMIT " + std::to_string(maxQueueSize);
-    std::string sql = "DELETE FROM visitQueue WHERE url IN (SELECT url FROM visitQueue LIMIT 100) "
-                      "RETURNING url;";
 
-    pqxx::result result = tx.exec(sql);
+    // wait for getdatbase to return a value before continuing on thread
+    std::string url;
+    bool done = false;
+    std::condition_variable cv;
+    std::mutex m;
+    threadPool->Enqueue([&] {
+        Database& database = Database::GetDatabase();
+        std::cout << "getting urls from database\n";
 
-    for (pqxx::row_ref row : result) {
-        QueueAdd(row["url"].as<std::string>());
-    }
+        pqxx::work tx{database.cx};
+        // std::string sql = "SELECT * FROM siteData LIMIT " + std::to_string(maxQueueSize);
+        std::string sql = "DELETE FROM visitQueue WHERE url IN (SELECT url FROM visitQueue LIMIT 100) "
+                          "RETURNING url;";
 
-    // if DB was empty, populate from urls list instead
-    if (QueueSize() == 0) {
-        for (const std::string& url : UrlsCopy())
-            QueueAdd(url);
-        UrlsClear();
-    }
+        pqxx::result result = tx.exec(sql);
 
-    tx.commit();
+        std::cout << "got results, printing:\n";
+        for (pqxx::row_ref row : result) {
+            std::cout << "results: " << row["url"].as<std::string>() << "\n";
+            queue.push(row["url"].as<std::string>());
+        }
+
+        // if DB was empty, populate from urls list instead
+        std::cout << "size: " << queue.size() << "\n";
+        if (queue.size() == 0) { // if empty, move url list to queue
+            printf("queue empty, moving urls into queue: %d\n", (int)UrlsCopy().size());
+            for (const std::string& url : UrlsCopy())
+                queue.push(url);
+            UrlsClear();
+        }
+        std::cout << "queue size before: " << queue.size() << "\n";
+        std::cout << "commit\n";
+
+        tx.commit();
+
+        {
+            std::cout << "before m\n";
+            std::lock_guard lock(m);
+            std::cout << "after m\n";
+            done = true;
+        }
+        std::cout << "notify\n";
+
+        cv.notify_one();
+    });
+
+    std::cout << "locking\n";
+    std::unique_lock lock(m);
+    cv.wait(lock, [&] { return done; });
+
+    std::cout << "queue size after: " << queue.size() << "\n";
 }
 
 long Database::InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon) {
-    // start a transaction
-    pqxx::work tx{cx};
+    long urlId = 0;
+    bool done = false;
+    std::condition_variable cv;
+    std::mutex m;
+    threadPool->Enqueue([&] {
+        Database& database = Database::GetDatabase();
 
-    bool addTrailingSlash = url.back() != '/'; // add trailing slash if it doesn't have one already
-    std::cout << "adding to DB!: " << url << (addTrailingSlash ? "/" : "") << "\n";
-    long urlId = tx.query_value<long>(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon));
+        pqxx::work tx{database.cx};
+        bool addTrailingSlash = url.back() != '/'; // add trailing slash if it doesn't have one already
+        std::cout << "adding to DB!: " << url << (addTrailingSlash ? "/" : "") << "\n";
+        urlId = tx.query_value<long>(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon));
 
-    // Commit the transaction
-    tx.commit();
+        // Commit the transaction
+        tx.commit();
 
+        {
+            std::lock_guard lock(m);
+            done = true;
+        }
+
+        cv.notify_one();
+    });
+
+    std::unique_lock lock(m);
+    cv.wait(lock, [&] { return done; });
+
+    printf("\033[35mInserted Page: %s (%ld)\033[0m\n", url.c_str(), urlId);
     return urlId;
 }
 
 void Database::IndexerAddToDB(long urlId, const std::string& url, std::unordered_map<std::string, int> counts) { // start a transaction
-    pqxx::work tx{cx};
+    threadPool->Enqueue([urlId, url, counts] {
+        Database& database = Database::GetDatabase();
+        pqxx::work tx{database.cx};
 
-    for (auto& [word, count] : counts) {
-        int wordId = tx.query_value<int>(pqxx::prepped("insertWord"), pqxx::params(word));
-        // std::cout << "adding \"" << word << "\" (" << wordId << "), url: \"" << url << " (" << urlId << "), count: " << count << "\n";
-        tx.exec(pqxx::prepped("insertInvertedIndex"), pqxx::params(wordId, urlId, count));
-    }
+        // prevents Postgres from Deadlocking
+        std::vector<std::pair<std::string, int>> words(counts.begin(), counts.end());
+        std::sort(words.begin(), words.end());
 
-    // Commit the transaction
-    tx.commit();
+        for (auto& [word, count] : words) {
+            int wordId = tx.query_value<int>(pqxx::prepped("insertWord"), pqxx::params(word));
+            // std::cout << "adding \"" << word << "\" (" << wordId << "), url: \"" << url << " (" << urlId << "), count: " << count << "\n";
+            tx.exec(pqxx::prepped("insertInvertedIndex"), pqxx::params(wordId, urlId, count));
+        }
+
+        // Commit the transaction
+        tx.commit();
+    });
 }
 
 void Database::QueueAdd(const std::string& v) {
@@ -100,14 +163,42 @@ size_t Database::QueueSize() {
     return queue.size();
 }
 
+void Database::InitPopulate() {
+    long urlId = 0;
+    bool done = false;
+    std::condition_variable cv;
+    std::mutex m;
+    threadPool->Enqueue([&] {
+        Database& database = Database::GetDatabase();
+        std::unique_lock<std::mutex> lock(queueMutex);
+        PopulateSiteQueue();
+        {
+            std::lock_guard lock(m);
+            done = true;
+        }
+
+        cv.notify_one();
+    });
+
+    std::unique_lock lock(m);
+    cv.wait(lock, [&] { return done; });
+}
+
 std::string Database::QueueGet() {
     std::unique_lock<std::mutex> lock(queueMutex);
-    std::string url = queue.front();
+    std::string url;
+
+    url = queue.front();
     queue.pop();
 
     // if queue empty, populate it
-    if (queue.empty())
+    if (queue.empty()) {
+        std::cout << "trying to get data from database\n";
         PopulateSiteQueue();
+    }
+
+    if (url.empty())
+        throw std::runtime_error("url is empty!\n");
 
     return std::move(url);
 }
@@ -137,6 +228,7 @@ void Database::UrlsAdd(const std::string& url) {
 
     urls.push_back(url);
 
+    printf("urls size: %d\n", (int)urls.size());
     if (urls.size() < maxQueueSize)
         return; // smaller than max size, return
 

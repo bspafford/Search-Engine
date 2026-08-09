@@ -1,5 +1,7 @@
 #include "Renderer.h"
 #include "helper.h"
+#include "ThreadPool.h"
+#include "Parser.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -80,6 +82,10 @@ void Renderer::InitChromium() {
     }
 }
 
+void Renderer::InitPool(int threads) {
+    threadPool = new ThreadPool(threads);
+}
+
 void Renderer::Init() {
     curl = curl_easy_init();
 
@@ -98,6 +104,23 @@ void Renderer::Init() {
 Renderer::~Renderer() {
     std::cout << "running ~Renderer\n";
     CleanUp();
+}
+
+void Renderer::Render(const std::string& url) {
+    threadPool->Enqueue([url = std::move(url)] {
+        Renderer& renderer = Renderer::GetRenderer();
+
+        // render should pick up first value from queue (make sure to use locks)
+        // then use data to render somehow
+        // add that data to another queue
+        long httpCode = 0;
+        // std::string html = Renderer::GetHTML(document, url, &httpCode);
+        // std::cout << "rendered html:\n" << html << "\n\n";
+        printf("Rendering: %s\n", url.c_str());
+        std::string html = renderer.GetHTML(url, &httpCode);
+
+        Parser::Parse(httpCode, url, html);
+    });
 }
 
 void Renderer::EnablePage(ix::WebSocket& webSocket) {

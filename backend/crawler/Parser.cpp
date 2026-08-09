@@ -1,10 +1,12 @@
 #include "Parser.h"
 #include "Indexer.h"
 #include "UrlHelper.h"
-#include "Database.h"
 #include "ThreadPool.h"
+#include "Fetcher.h"
+#include "Database.h"
 
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <pqxx/pqxx>
 #include <boost/url.hpp>
@@ -30,6 +32,10 @@ static lxb_status_t callback(const lxb_char_t *data, size_t len, void *ctx) {
     std::string* str = static_cast<std::string*>(ctx);
     str->append(reinterpret_cast<const char*>(data), len);
     return LXB_STATUS_OK;
+}
+
+void Parser::InitPool(int threads) {
+    threadPool = new ThreadPool(threads);
 }
 
 void Parser::Init() {
@@ -71,7 +77,15 @@ Parser::~Parser() {
     }
 }
 
-void Parser::ParseLinks(ThreadPool* databasePool, long httpCode, const std::string& urlStr, const std::string& html) {
+void Parser::Parse(const long httpCode, const std::string& url, const std::string& html) {
+    threadPool->Enqueue([httpCode, url = std::move(url), html = std::move(html)] {
+        // get data from the render queue and extract, then finally add to like final queue
+        Parser& parser = Parser::GetParser();
+        parser.ParseLinks(httpCode, url, html);
+    });
+}
+
+void Parser::ParseLinks(long httpCode, const std::string& urlStr, const std::string& html) {
     lxb_status_t status;
     lxb_dom_element_t *element;
     lxb_url_parser_t url_parser;
@@ -105,9 +119,11 @@ void Parser::ParseLinks(ThreadPool* databasePool, long httpCode, const std::stri
     std::string description = GetDescription(document);
     std::string favicon = DownloadFavicon(document, urlStr);
 
+    printf("\033[33mUrlStr: %s\033[0m\n", urlStr.c_str());
     if (IsOriginURL(urlStr)) { // only add to database if Origin URL
-        long urlId = ExecuteSQL(databasePool, httpCode, urlStr, title, description, 0, favicon);
-        Indexer::ExtractKeywords(databasePool, urlId, urlStr, document, collection);
+        long urlId = ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
+        if (urlId != -1)
+            Indexer::ExtractKeywords(urlId, urlStr, document, collection);
     }
 
     // Iterate links, extract href, and resolve each URL
@@ -135,7 +151,7 @@ void Parser::ParseLinks(ThreadPool* databasePool, long httpCode, const std::stri
         (void) lxb_url_serialize(url, callback, &resolved_url, false);
         if (IsValidURL(resolved_url)) {
             UrlHelper::Normalize(resolved_url);
-            AddURL(databasePool, resolved_url);
+            AddURL(resolved_url);
         }
     }
 
@@ -161,19 +177,16 @@ bool Parser::ShouldVisit(std::string& url) {
 
 // may add url to search further
 // wont add if already searched through or isn't allowed to visit
-void Parser::AddURL(ThreadPool* databasePool, std::string& url) {
+void Parser::AddURL(std::string& url) {
     if (ShouldVisit(url)) { // if haven't already seen url
         VisitedInsert(url);
 
-        databasePool->Enqueue([url] {
-            Database& database = Database::GetDatabase();
-            database.UrlsAdd(url);
-        });
+        Fetcher::Fetch(url);
 
         // if haven't visited origin url then add to queue
         std::string origin = UrlHelper::ExtractOrigin(url, nullptr);
         if (!VisitedContains(origin))
-            AddURL(databasePool, origin);
+            AddURL(origin);
     }
 }
 
@@ -289,7 +302,7 @@ std::string Parser::GetFavicon(lxb_html_document_t* document) {
     if (status != LXB_STATUS_OK)
         printf("No favicon found");
 
-    std::cout << "favicon length: " << lxb_dom_collection_length(favicon) << "\n";
+    // std::cout << "favicon length: " << lxb_dom_collection_length(favicon) << "\n";
     for (int i = 0; i < lxb_dom_collection_length(favicon); ++i) {
         element = lxb_dom_collection_element(favicon, i);
         rel = lxb_dom_element_get_attribute(element, (const lxb_char_t*) "rel", 3, &len);
@@ -304,13 +317,13 @@ std::string Parser::GetFavicon(lxb_html_document_t* document) {
         std::string faviconStr(reinterpret_cast<const char*>(rel));
 
         lxb_dom_collection_destroy(favicon, true);
-        std::cout << "favicon: " << faviconStr << "\n";
+        // std::cout << "favicon: " << faviconStr << "\n";
         return faviconStr;
     }
 
     /* Cleanup. */
     lxb_dom_collection_destroy(favicon, true);
-    std::cout << "No favicon found 1\n";
+    // std::cout << "No favicon found 1\n";
     return "";
 }
 
@@ -327,38 +340,25 @@ bool Parser::IsOriginURL(const std::string url) {
     return pathStart == std::string::npos || pathStart == url.size() - 1;
 }
 
-long Parser::ExecuteSQL(ThreadPool* databasePool, long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
+long Parser::ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
     // 5xx: retry later
+    printf("\033[33mExecute SQL: %s, %ld\033[0m\n", url.c_str(), httpCode);
     if (httpCode >= 300) {
         std::cout << "bad http code: " << httpCode << " on: " << url << ", returning\n";
         return -1;
     }
 
     // if url IS the base, then do it
+    printf("\033[33mChecking Origin: %b\033[0m\n", IsOriginURL(url));
     if (!IsOriginURL(url))
         return -1;
 
     // Send to thread pool, so I dont have to redefine database connection
-    long urlId = 0;
-    bool done = false;
-    std::condition_variable cv;
-    std::mutex m;
-    databasePool->Enqueue([&] {
-        Database& database = Database::GetDatabase();
-        urlId = database.InsertPage(url, title, description, contentHash, favicon);
-        {
-            std::lock_guard lock(m);
-            done = true;
-        }
-
-        cv.notify_one();
-    });
-
-    std::unique_lock lock(m);
-    cv.wait(lock, [&] { return done; });
+    printf("\033[33mInserting Page: %s\033[0m\n", url.c_str());
+    long urlId = Database::InsertPage(url, title, description, contentHash, favicon);
 
     return urlId;
 }

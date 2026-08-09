@@ -1,7 +1,6 @@
 #include "Indexer.h"
 #include "helper.h"
 #include "Database.h"
-#include "ThreadPool.h"
 
 #include <iostream>
 #include <vector>
@@ -106,15 +105,12 @@ void Traverse(lxb_dom_node_t* node, std::unordered_map<std::string, int>& counts
 }
 
 namespace Indexer {
-void ExtractKeywords(ThreadPool* databasePool, long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection) {
+void ExtractKeywords(long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection) {
     std::unordered_map<std::string, int> counts;
     lxb_dom_node_t* root = lxb_dom_interface_node(document);
     Traverse(root, counts);
 
-    databasePool->Enqueue([urlId, url, counts] {
-        Database& database = Database::GetDatabase();
-        database.IndexerAddToDB(urlId, url, counts);
-    });
+    Database::IndexerAddToDB(urlId, url, counts);
 }
 
 void Init() {

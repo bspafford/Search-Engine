@@ -12,17 +12,22 @@
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 
+class ThreadPool;
+
 class Renderer {
 public:
     ~Renderer();
 
     static void InitChromium();
+    static void InitPool(int threads);
     void Init();
     void StartClient(const std::string& debuggerUrl);
 
     void LaunchChromium();
     std::string CurlGet(const std::string& url, long* httpCode, const std::string& method);
     std::string GetHTML(const std::string& url, long* httpCode);
+
+    static void Render(const std::string& url);
 
     void CleanUp();
 
@@ -63,4 +68,6 @@ private:
     bool finishedSetup = false;
 
     static inline pid_t pid = -1;
+
+    static inline ThreadPool* threadPool = nullptr;
 };

@@ -26,4 +26,6 @@ private:
     static inline std::atomic<int> activeTasks = 0;
     static inline std::condition_variable doneCV;
     static inline std::mutex doneMutex;
+
+    static inline int maxTasks = 100;
 };

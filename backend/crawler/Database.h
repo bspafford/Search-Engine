@@ -5,9 +5,12 @@
 #include <mutex>
 #include <pqxx/pqxx>
 
+class ThreadPool;
+
 class Database {
 public:
     Database();
+    static void InitPool(int threads);
     void Init();
 
     static Database& GetDatabase() {
@@ -20,19 +23,21 @@ public:
         return database;
     }
 
-    long InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon);
-    void IndexerAddToDB(long urlId, const std::string& url, std::unordered_map<std::string, int> counts);
+    static long InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon);
+    static void IndexerAddToDB(long urlId, const std::string& url, std::unordered_map<std::string, int> counts);
 
     static size_t QueueSize();
+    // called first on program start to populate the queue
+    static void InitPopulate();
     // Get queue.front(), POPs it from queue, and will populate if queue becomes empty
-    std::string QueueGet();
+    static std::string QueueGet();
 
     // Handles if urls.size() becomes greater than {maxQueueSize}
     void UrlsAdd(const std::string& url);
 
 private:
     // gets top {maxQueueSize} from queue DB and inserts into queue
-    void PopulateSiteQueue();
+    static void PopulateSiteQueue();
 
     pqxx::connection cx;
 
@@ -49,4 +54,6 @@ private:
     static inline int maxQueueSize = 5;
     static inline std::queue<std::string> queue;
     static inline std::vector<std::string> urls;
+
+    static inline ThreadPool* threadPool = nullptr;
 };

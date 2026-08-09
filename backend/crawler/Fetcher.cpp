@@ -1,7 +1,13 @@
 #include "Fetcher.h"
 #include "UrlHelper.h"
+#include "Database.h"
+#include "Renderer.h"
 
 #include <iostream>
+
+void Fetcher::InitPool(int threads) {
+    threadPool = new ThreadPool(threads);
+}
 
 void Fetcher::Init() {
     std::cout << "\033[33mInit Fetcher\n\033[0m";
@@ -13,10 +19,31 @@ void Fetcher::Init() {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
 }
 
+void Fetcher::Fetch(std::string url) {
+    threadPool->Enqueue([url = std::move(url)]() mutable {
+        Fetcher& fetcher = Fetcher::GetFetcher();
+
+        // printf("fetching: %s\n", url.c_str());
+        UrlHelper::Normalize(url);
+        if (fetcher.CheckRobotsTXT(url)) {
+            long httpCode = 0;
+            printf("\033[34m#%ld/%ld, Searching: %s\n\033[0m", IdxIncrement(), Database::QueueSize() + 1, url.c_str());
+
+            // render contents
+            // add data to queue when finished
+            Renderer::Render(url);
+        } else {
+            // skip page
+            std::cout << "Skipping: \"" << url << "\", against robots.txt\n";
+        }
+    });
+}
+
 std::unordered_map<std::string, RobotInfo>::iterator Fetcher::ParseRobotsTXT(const std::string& origin, std::string_view robotsText) {
     RobotInfo robotInfo;
     robotInfo.fetchedAt = std::chrono::steady_clock::now();
-    auto [it, success] = robotsTXT.insert({ origin, robotInfo });
+    auto it = RobotsInsert(origin, robotInfo);
+
 
     size_t start = 0;
     bool active = false;
@@ -72,25 +99,25 @@ bool Fetcher::CheckRobotsTXT(const std::string& url) {
 
     // if origin already inside robotsTXT, then find path that fits to rule. If non, i guess allow
     // if not already inside map, then go to origin + "/robots.txt", parse file, and add to map, then check
-    auto it = robotsTXT.find(origin);
-    if (it == robotsTXT.end()) { // wasn't found
+    auto it = RobotsFind(origin);
+    if (it == RobotsEnd()) { // wasn't found
         // go to (origin) + "/robots.txt"
-        std::cout << "getting robots.txt for: " << origin << "\n";
+        // std::cout << "getting robots.txt for: " << origin << "\n";
         long httpCode;
         std::string output = CurlGet(std::string(origin + "robots.txt"), &httpCode);
 
         if (httpCode >= 300 || httpCode == 0) {
-            robotsTXT.insert({ origin, {} }); // add blank input, didn't find robots.txt
-            std::cout << "problem finding \"" << origin << "robots.txt\", http code: " << httpCode << ", returning\n";
+            RobotsInsert(origin, {}); // add blank input, didn't find robots.txt
+            // std::cout << "problem finding \"" << origin << "robots.txt\", http code: " << httpCode << ", returning\n";
             return true;
         }
 
-        std::cout << "got it, now parsing\n";
+        // std::cout << "got it, now parsing\n";
 
         // parse file
         it = ParseRobotsTXT(origin, output);
 
-        std::cout << "finished parsing\n";
+        // std::cout << "finished parsing\n";
     }
 
     bool allow;
@@ -115,7 +142,7 @@ std::string Fetcher::CurlGet(const std::string& url, long* httpCode) {
     std::string html = "";
     CURLcode res;
 
-    std::cout << "curl: " << curl << "\n";
+    // std::cout << "curl: " << curl << "\n";
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &html);
@@ -123,7 +150,8 @@ std::string Fetcher::CurlGet(const std::string& url, long* httpCode) {
     res = curl_easy_perform(curl); // perform request
 
     if (res != CURLE_OK) {
-        fprintf(stderr, "Transfer failed: %s\n", curl_easy_strerror(res));
+        printf("Transfer failed: %s | url: %s, code: %ld\n", curl_easy_strerror(res), url.c_str(), httpCode ? *httpCode : -1);
+
         throw std::runtime_error("Failed!, res is not ok\n");
     }
 
@@ -131,7 +159,7 @@ std::string Fetcher::CurlGet(const std::string& url, long* httpCode) {
     if (httpCode) {
         *httpCode = 0; // init to 0
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, httpCode);
-        printf("HTTP Status Code: %ld, for: %s\n\n", *httpCode, url.c_str());
+        // printf("HTTP Status Code: %ld, for: %s\n\n", *httpCode, url.c_str());
     }
 
     return html;
@@ -140,4 +168,25 @@ std::string Fetcher::CurlGet(const std::string& url, long* httpCode) {
 size_t Fetcher::write_data(char *contents, size_t size, size_t nmemb, void *userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
+}
+
+
+std::unordered_map<std::string, RobotInfo>::iterator Fetcher::RobotsInsert(const std::string& robotsName, RobotInfo robotInfo) {
+    std::unique_lock<std::mutex> lock(robotsMutex);
+    auto [it, _] = robotsTXT.insert({ robotsName, robotInfo });
+    return it;
+}
+
+std::unordered_map<std::string, RobotInfo>::iterator Fetcher::RobotsFind(const std::string& robotsName) {
+    std::unique_lock<std::mutex> lock(robotsMutex);
+    return robotsTXT.find(robotsName);
+}
+
+std::unordered_map<std::string, RobotInfo>::iterator Fetcher::RobotsEnd() {
+    return robotsTXT.end();
+}
+
+long Fetcher::IdxIncrement() {
+    std::unique_lock<std::mutex> lock(idxMutex);
+    return ++idx;
 }

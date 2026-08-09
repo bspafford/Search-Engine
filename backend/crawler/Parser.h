@@ -15,10 +15,12 @@ class ThreadPool;
 
 class Parser {
 public:
+    static void InitPool(int threads);
     void Init();
     ~Parser();
 
-    void ParseLinks(ThreadPool* databasePool, long httpCode, const std::string& urlStr, const std::string& html);
+    static void Parse(const long httpCode, const std::string& url, const std::string& html);
+    void ParseLinks(long httpCode, const std::string& urlStr, const std::string& html);
 
     static Parser& GetParser() {
         thread_local Parser parser;
@@ -30,8 +32,10 @@ public:
         return parser;
     }
 
+    static void AddURL(std::string& url);
+
 private:
-    long ExecuteSQL(ThreadPool* databasePool, long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon);
+    long ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon);
     bool IsOriginURL(const std::string url);
     bool IsValidURL(const std::string url);
     // resolves absolute and relative links to absolute
@@ -42,8 +46,7 @@ private:
     // //cdn.example.com/favicon.png    --> https://cdn.example.com/favicon.png
     std::string ResolveUrl(const std::string& origin, const std::string& favicon);
 
-    bool ShouldVisit(std::string& url);
-    void AddURL(ThreadPool* databasePool, std::string& url);
+    static bool ShouldVisit(std::string& url);
 
     std::string GetTitle(lxb_html_document_t* document);
     std::string GetDescription(lxb_html_document_t* document);
@@ -63,6 +66,8 @@ private:
 
     static inline std::unordered_set<std::string> visited;
     static inline std::mutex visitedMutex;
-    bool VisitedContains(const std::string& url);
-    void VisitedInsert(const std::string& url);
+    static bool VisitedContains(const std::string& url);
+    static void VisitedInsert(const std::string& url);
+
+    static inline ThreadPool* threadPool = nullptr;
 };
