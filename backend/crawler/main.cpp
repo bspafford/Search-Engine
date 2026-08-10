@@ -68,12 +68,18 @@ int main(int argc, const char* argv[]) {
 
     Init();
 
-    size_t fetchSize = 2;
-    size_t renderSize = 2;
-    size_t parseSize = 2;
-    size_t databaseSize = 2;
+    size_t fetchSize = 8;
+    size_t renderSize = 4;
+    size_t parseSize = 8;
+    size_t databaseSize = 4;
+    // size_t fetchSize = 1;
+    // size_t renderSize = 1;
+    // size_t parseSize = 1;
+    // size_t databaseSize = 2;
+
     // each pool needs to be assigned to its own pointer. Fetch pool should have a Fetcher
         // renderPool should have a renderer obj, etc
+    Fetcher::SetMaxDepth(depth);
     Fetcher::InitPool(fetchSize);
     Renderer::InitPool(renderSize);
     Parser::InitPool(parseSize);

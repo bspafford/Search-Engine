@@ -358,7 +358,9 @@ std::string Renderer::CurlGet(const std::string& url, long* httpCode, const std:
 
     if (res != CURLE_OK) {
         fprintf(stderr, "Transfer failed: %s\n", curl_easy_strerror(res));
-        throw std::runtime_error("Failed!, res is not ok\n");
+        // throw std::runtime_error("Failed!, res is not ok\n");
+        if (httpCode) *httpCode = -1;
+        return html;
     }
 
     // extract the server's HTTP response code

@@ -21,6 +21,9 @@ void Fetcher::Init() {
 
 void Fetcher::Fetch(std::string url) {
     threadPool->Enqueue([url = std::move(url)]() mutable {
+        std::cout << GetIdx() << " > " << maxDepth << "\n";
+        if (GetIdx() > maxDepth) return;
+
         Fetcher& fetcher = Fetcher::GetFetcher();
 
         // printf("fetching: %s\n", url.c_str());
@@ -152,7 +155,9 @@ std::string Fetcher::CurlGet(const std::string& url, long* httpCode) {
     if (res != CURLE_OK) {
         printf("Transfer failed: %s | url: %s, code: %ld\n", curl_easy_strerror(res), url.c_str(), httpCode ? *httpCode : -1);
 
-        throw std::runtime_error("Failed!, res is not ok\n");
+        // throw std::runtime_error("Failed!, res is not ok\n");
+        if (httpCode) *httpCode = -1;
+        return "";
     }
 
     // extract the server's HTTP response code
@@ -189,4 +194,9 @@ std::unordered_map<std::string, RobotInfo>::iterator Fetcher::RobotsEnd() {
 long Fetcher::IdxIncrement() {
     std::unique_lock<std::mutex> lock(idxMutex);
     return ++idx;
+}
+
+long Fetcher::GetIdx() {
+    std::unique_lock<std::mutex> lock(idxMutex);
+    return idx;
 }

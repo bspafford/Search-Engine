@@ -31,7 +31,6 @@ ThreadPool::ThreadPool(size_t threadsNum) {
 }
 
 ThreadPool::~ThreadPool() {
-    throw std::runtime_error("\033[31mThreadPool is closing!\033[0m\n");
     {
         std::unique_lock<std::mutex> lock(queueMutex);
         stop = true;

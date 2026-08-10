@@ -72,6 +72,8 @@ public:
 
     static void Fetch(std::string url);
 
+    static void SetMaxDepth(long depth) { maxDepth = depth; }
+
     static Fetcher& GetFetcher() {
         thread_local Fetcher fetcher;
         thread_local bool initialized = false;
@@ -100,6 +102,9 @@ private:
     static std::unordered_map<std::string, RobotInfo>::iterator RobotsFind(const std::string& robotsName);
     static std::unordered_map<std::string, RobotInfo>::iterator RobotsEnd();
     static long IdxIncrement();
+    static long GetIdx();
 
     static inline ThreadPool* threadPool = nullptr;
+
+    static inline long maxDepth = -1;
 };
