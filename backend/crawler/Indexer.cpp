@@ -88,7 +88,7 @@ bool ShouldSkip(lxb_dom_node_t* node) {
            name == LXB_TAG_TEMPLATE;
 }
 
-void Traverse(lxb_dom_node_t* node, std::unordered_map<std::string, int>& counts) {
+void Traverse(lxb_dom_node_t* node, std::vector<std::string>& words) {
     if (ShouldSkip(node))
         return;
 
@@ -96,21 +96,21 @@ void Traverse(lxb_dom_node_t* node, std::unordered_map<std::string, int>& counts
         size_t len;
         lxb_char_t* text = lxb_dom_node_text_content(node, &len);
         if (text && len > 0) {
-            Helper::ParseText(std::string(reinterpret_cast<char*>(text), len), counts);
+            Helper::ParseText(std::string(reinterpret_cast<char*>(text), len), words);
         }
     }
 
     for (lxb_dom_node_t* child = node->first_child; child != nullptr; child = child->next)
-        Traverse(child, counts);
+        Traverse(child, words);
 }
 
 namespace Indexer {
 void ExtractKeywords(long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection) {
-    std::unordered_map<std::string, int> counts;
+    std::vector<std::string> words;
     lxb_dom_node_t* root = lxb_dom_interface_node(document);
-    Traverse(root, counts);
+    Traverse(root, words);
 
-    Database::IndexerAddToDB(urlId, url, counts);
+    Database::IndexerAddToDB(urlId, url, words);
 }
 
 void Init() {

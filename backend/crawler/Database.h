@@ -24,7 +24,9 @@ public:
     }
 
     static long InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon);
-    static void IndexerAddToDB(long urlId, const std::string& url, std::unordered_map<std::string, int> counts);
+    // takes ownership of the words vector
+    static void IndexerAddToDB(long urlId, const std::string& url, const std::vector<std::string>& words);
+    static void IncreaseAuthority(std::string url);
 
     static size_t QueueSize();
     // called first on program start to populate the queue

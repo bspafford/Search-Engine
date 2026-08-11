@@ -117,14 +117,13 @@ void Parser::ParseLinks(long httpCode, const std::string& urlStr, const std::str
 
     std::string title = GetTitle(document);
     std::string description = GetDescription(document);
-    std::string favicon = DownloadFavicon(document, urlStr);
+    std::string origin = UrlHelper::ExtractOrigin(urlStr, nullptr);
+    std::string favicon = DownloadFavicon(document, origin);
 
     printf("\033[33mUrlStr: %s\033[0m\n", urlStr.c_str());
-    if (IsOriginURL(urlStr)) { // only add to database if Origin URL
-        long urlId = ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
-        if (urlId != -1)
-            Indexer::ExtractKeywords(urlId, urlStr, document, collection);
-    }
+    long urlId = ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
+    if (urlId != -1)
+        Indexer::ExtractKeywords(urlId, urlStr, document, collection);
 
     // Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
@@ -187,6 +186,9 @@ void Parser::AddURL(std::string& url) {
         std::string origin = UrlHelper::ExtractOrigin(url, nullptr);
         if (!VisitedContains(origin))
             AddURL(origin);
+    } else {
+        // alreadyed visited, increase page rank
+        Database::IncreaseAuthority(url);
     }
 }
 
@@ -350,11 +352,6 @@ long Parser::ExecuteSQL(long httpCode, const std::string& url, std::string& titl
         std::cout << "bad http code: " << httpCode << " on: " << url << ", returning\n";
         return -1;
     }
-
-    // if url IS the base, then do it
-    printf("\033[33mChecking Origin: %b\033[0m\n", IsOriginURL(url));
-    if (!IsOriginURL(url))
-        return -1;
 
     // Send to thread pool, so I dont have to redefine database connection
     printf("\033[33mInserting Page: %s\033[0m\n", url.c_str());

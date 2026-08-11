@@ -1,13 +1,11 @@
 <div class="searchItem">
     <a class="pageLinkBox" href="{{URL}}">
-        <div class="pageInfo">
-            <img class="favIcon" src="favicons/{{FAVICON}}">
-            <div>
-                <p class="pageTitle">{{TITLE}}</p>
-                <p class="pageLink">{{URL}}</p>
-            </div>
+        <img class="favIcon" src="favicons/{{FAVICON}}">
+        <div>
+            <p class="pageTitle">{{TITLE}}</p>
+            <p class="pageLink">{{URL}}</p>
         </div>
-        <p class="pageLinkTitle" href="">{{TITLE}}</p>
     </a>
+    <a class="pageLinkTitle" href="{{URL}}">{{TITLE}}</a>
     <p class="pageDescription">{{DESCRIPTION}}</p>
 </div>

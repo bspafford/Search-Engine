@@ -40,7 +40,7 @@ bool IsImportantWord(const std::string_view& word) {
 }
 
 namespace Helper {
-void ParseText(std::string text, std::unordered_map<std::string, int>& counts) {
+void ParseText(std::string text, std::vector<std::string>& words) {
     SetupStopWords();
 
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
@@ -57,7 +57,7 @@ void ParseText(std::string text, std::unordered_map<std::string, int>& counts) {
     while (pos != std::string::npos) {
         std::string_view word = FindSplit(text, pos);
         if (!word.empty() && IsImportantWord(word))
-            ++counts[std::string(word)];
+            words.push_back(std::string(word));
     }
 }
 

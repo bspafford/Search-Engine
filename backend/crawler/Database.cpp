@@ -43,6 +43,19 @@ void Database::Init() {
         "INSERT INTO inverted_index (wordId, urlId, count) VALUES ($1, $2, $3) "
         "ON CONFLICT (wordId, urlId) DO NOTHING"
     );
+
+    cx.prepare(
+        "insertWordPosition",
+        "INSERT INTO wordPositions (siteId, wordId, position) VALUES($1, $2, $3) "
+        "ON CONFLICT (siteId, wordId, position) DO NOTHING"
+    );
+
+    cx.prepare(
+        "increaseAuthority",
+        "UPDATE siteData "
+        "SET authority = authority + 1 "
+        "WHERE url = $1"
+    );
 }
 
 // gets top {maxQueueSize} from queue DB and inserts into queue
@@ -133,20 +146,46 @@ long Database::InsertPage(const std::string& url, const std::string& title, cons
     return urlId;
 }
 
-void Database::IndexerAddToDB(long urlId, const std::string& url, std::unordered_map<std::string, int> counts) { // start a transaction
-    threadPool->Enqueue([urlId, url, counts] {
+void Database::IndexerAddToDB(long urlId, const std::string& url, const std::vector<std::string>& words) { // start a transaction
+    threadPool->Enqueue([urlId, url, words = std::move(words)] {
         Database& database = Database::GetDatabase();
         pqxx::work tx{database.cx};
+        std::unordered_map<std::string, int> counts;
+
+        // temporarily cache wordIds for insertWordPosition to access
+        std::unordered_map<std::string, long> wordIds;
+
+        // words list to counts
+        for (const std::string& word : words)
+            ++counts[word];
 
         // prevents Postgres from Deadlocking
-        std::vector<std::pair<std::string, int>> words(counts.begin(), counts.end());
-        std::sort(words.begin(), words.end());
-
-        for (auto& [word, count] : words) {
+        std::vector<std::pair<std::string, int>> wordCounts(counts.begin(), counts.end());
+        std::sort(wordCounts.begin(), wordCounts.end());
+        // insert words count
+        for (auto& [word, count] : wordCounts) {
             int wordId = tx.query_value<int>(pqxx::prepped("insertWord"), pqxx::params(word));
             // std::cout << "adding \"" << word << "\" (" << wordId << "), url: \"" << url << " (" << urlId << "), count: " << count << "\n";
             tx.exec(pqxx::prepped("insertInvertedIndex"), pqxx::params(wordId, urlId, count));
+
+            wordIds[word] = wordId;
         }
+
+        // insert word positions
+        for (int i = 0; i < words.size(); ++i)
+            tx.exec(pqxx::prepped("insertWordPosition"), pqxx::params(urlId, wordIds[words[i]], i + 1));
+
+        // Commit the transaction
+        tx.commit();
+    });
+}
+
+void Database::IncreaseAuthority(std::string url) {
+    threadPool->Enqueue([url = std::move(url)] {
+        Database& database = Database::GetDatabase();
+        pqxx::work tx{database.cx};
+
+        tx.exec(pqxx::prepped("increaseAuthority"), pqxx::params(url));
 
         // Commit the transaction
         tx.commit();
