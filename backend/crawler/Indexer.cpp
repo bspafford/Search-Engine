@@ -1,6 +1,4 @@
 #include "Indexer.h"
-#include "helper.h"
-#include "Database.h"
 
 #include <iostream>
 #include <vector>
@@ -88,7 +86,16 @@ bool ShouldSkip(lxb_dom_node_t* node) {
            name == LXB_TAG_TEMPLATE;
 }
 
-void Traverse(lxb_dom_node_t* node, std::vector<std::string>& words) {
+std::string TagToString(lxb_dom_node_t* node) {
+    size_t length;
+    const lxb_char_t* name = lxb_tag_name_by_id(node->parent->local_name, &length);
+
+    std::string tagName(reinterpret_cast<const char*>(name), length);
+    printf("\033[33mTag Name: %s\033[0m\n", tagName.c_str());
+    return tagName;
+}
+
+void Traverse(lxb_dom_node_t* node, std::vector<WordData>& words) {
     if (ShouldSkip(node))
         return;
 
@@ -96,7 +103,8 @@ void Traverse(lxb_dom_node_t* node, std::vector<std::string>& words) {
         size_t len;
         lxb_char_t* text = lxb_dom_node_text_content(node, &len);
         if (text && len > 0) {
-            Helper::ParseText(std::string(reinterpret_cast<char*>(text), len), words);
+            std::string tagName = TagToString(node);
+            Helper::ParseText(std::string(reinterpret_cast<char*>(text), len), words, tagName);
         }
     }
 
@@ -105,12 +113,9 @@ void Traverse(lxb_dom_node_t* node, std::vector<std::string>& words) {
 }
 
 namespace Indexer {
-void ExtractKeywords(long urlId, const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection) {
-    std::vector<std::string> words;
+void ExtractKeywords(const std::string& url, lxb_html_document_t* document, lxb_dom_collection_t *collection, std::vector<WordData>& words) {
     lxb_dom_node_t* root = lxb_dom_interface_node(document);
     Traverse(root, words);
-
-    Database::IndexerAddToDB(urlId, url, words);
 }
 
 void Init() {

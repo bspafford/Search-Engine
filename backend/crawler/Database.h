@@ -1,9 +1,12 @@
 #pragma ocne
 
+#include "helper.h"
+
 #include <vector>
 #include <queue>
 #include <mutex>
 #include <pqxx/pqxx>
+#include <string>
 
 class ThreadPool;
 
@@ -23,9 +26,9 @@ public:
         return database;
     }
 
-    static long InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon);
+    static long InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon, const long documentLength);
     // takes ownership of the words vector
-    static void IndexerAddToDB(long urlId, const std::string& url, const std::vector<std::string>& words);
+    static void IndexerAddToDB(long urlId, const std::string& url, const std::vector<WordData>& words);
     static void IncreaseAuthority(std::string url);
 
     static size_t QueueSize();

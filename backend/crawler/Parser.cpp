@@ -121,9 +121,11 @@ void Parser::ParseLinks(long httpCode, const std::string& urlStr, const std::str
     std::string favicon = DownloadFavicon(document, origin);
 
     printf("\033[33mUrlStr: %s\033[0m\n", urlStr.c_str());
-    long urlId = ExecuteSQL(httpCode, urlStr, title, description, 0, favicon);
-    if (urlId != -1)
-        Indexer::ExtractKeywords(urlId, urlStr, document, collection);
+    std::vector<WordData> words;
+    Indexer::ExtractKeywords(urlStr, document, collection, words); // extract keywords, get list of words
+    long urlId = ExecuteSQL(httpCode, urlStr, title, description, 0, favicon, words.size()); // add data to database
+    if (urlId != -1) // insert inverted index data into database
+        Database::IndexerAddToDB(urlId, urlStr, words);
 
     // Iterate links, extract href, and resolve each URL
     for (size_t i = 0; i < lxb_dom_collection_length(collection); i++) {
@@ -342,7 +344,7 @@ bool Parser::IsOriginURL(const std::string url) {
     return pathStart == std::string::npos || pathStart == url.size() - 1;
 }
 
-long Parser::ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon) {
+long Parser::ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon, const long documentLength) {
     // 2xx: good
     // 3xx: follow redirects
     // 4xx: mark as dead / skip
@@ -355,7 +357,7 @@ long Parser::ExecuteSQL(long httpCode, const std::string& url, std::string& titl
 
     // Send to thread pool, so I dont have to redefine database connection
     printf("\033[33mInserting Page: %s\033[0m\n", url.c_str());
-    long urlId = Database::InsertPage(url, title, description, contentHash, favicon);
+    long urlId = Database::InsertPage(url, title, description, contentHash, favicon, documentLength);
 
     return urlId;
 }

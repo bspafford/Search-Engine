@@ -18,15 +18,16 @@ void Database::Init() {
 
     cx.prepare(
         "insert_page",
-        "INSERT INTO siteData(url, title, description, contentHash, lastVisited, favicon) "
-        "VALUES($1, $2, $3, $4, NOW(), $5) "
+        "INSERT INTO siteData(url, title, description, contentHash, lastVisited, favicon, documentLength) "
+        "VALUES($1, $2, $3, $4, NOW(), $5, $6) "
         "ON CONFLICT (url) "
         "DO UPDATE SET "
         "title = EXCLUDED.title, "
         "description = EXCLUDED.description, "
         "contentHash = EXCLUDED.contentHash, "
         "lastVisited = NOW(), "
-        "favicon = EXCLUDED.favicon "
+        "favicon = EXCLUDED.favicon, "
+        "documentLength = EXCLUDED.documentLength "
         "RETURNING id"
     );
 
@@ -40,8 +41,8 @@ void Database::Init() {
 
     cx.prepare(
         "insertInvertedIndex",
-        "INSERT INTO inverted_index (wordId, urlId, count) VALUES ($1, $2, $3) "
-        "ON CONFLICT (wordId, urlId) DO NOTHING"
+        "INSERT INTO inverted_index (wordId, urlId, count, field) VALUES ($1, $2, $3, $4) "
+        "ON CONFLICT (wordId, urlId, field) DO NOTHING"
     );
 
     cx.prepare(
@@ -115,7 +116,7 @@ void Database::PopulateSiteQueue() {
     std::cout << "queue size after: " << queue.size() << "\n";
 }
 
-long Database::InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon) {
+long Database::InsertPage(const std::string& url, const std::string& title, const std::string& description, long contentHash, const std::string& favicon, const long documentLength) {
     long urlId = 0;
     bool done = false;
     std::condition_variable cv;
@@ -126,7 +127,7 @@ long Database::InsertPage(const std::string& url, const std::string& title, cons
         pqxx::work tx{database.cx};
         bool addTrailingSlash = url.back() != '/'; // add trailing slash if it doesn't have one already
         std::cout << "adding to DB!: " << url << (addTrailingSlash ? "/" : "") << "\n";
-        urlId = tx.query_value<long>(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon));
+        urlId = tx.query_value<long>(pqxx::prepped("insert_page"), pqxx::params((url + std::string(addTrailingSlash ? "/" : "")), title, description, contentHash, favicon, documentLength));
 
         // Commit the transaction
         tx.commit();
@@ -146,34 +147,43 @@ long Database::InsertPage(const std::string& url, const std::string& title, cons
     return urlId;
 }
 
-void Database::IndexerAddToDB(long urlId, const std::string& url, const std::vector<std::string>& words) { // start a transaction
+void Database::IndexerAddToDB(long urlId, const std::string& url, const std::vector<WordData>& words) { // start a transaction
     threadPool->Enqueue([urlId, url, words = std::move(words)] {
         Database& database = Database::GetDatabase();
         pqxx::work tx{database.cx};
-        std::unordered_map<std::string, int> counts;
+        std::unordered_map<WordData, int, WordDataHash> counts;
 
         // temporarily cache wordIds for insertWordPosition to access
         std::unordered_map<std::string, long> wordIds;
 
         // words list to counts
-        for (const std::string& word : words)
-            ++counts[word];
+        for (const WordData& data : words)
+            ++counts[data];
 
         // prevents Postgres from Deadlocking
-        std::vector<std::pair<std::string, int>> wordCounts(counts.begin(), counts.end());
-        std::sort(wordCounts.begin(), wordCounts.end());
-        // insert words count
-        for (auto& [word, count] : wordCounts) {
-            int wordId = tx.query_value<int>(pqxx::prepped("insertWord"), pqxx::params(word));
-            // std::cout << "adding \"" << word << "\" (" << wordId << "), url: \"" << url << " (" << urlId << "), count: " << count << "\n";
-            tx.exec(pqxx::prepped("insertInvertedIndex"), pqxx::params(wordId, urlId, count));
+        std::vector<std::pair<WordData, int>> wordCounts(counts.begin(), counts.end());
+        std::sort(wordCounts.begin(), wordCounts.end(),
+            [](const auto& a, const auto& b) {
+                if (a.first.word != b.first.word)
+                    return a.first.word < b.first.word;
 
-            wordIds[word] = wordId;
+                if (a.first.field != b.first.field)
+                    return a.first.field < b.first.field;
+
+                return a.second < b.second;
+            });
+        // insert words count
+        for (auto& [wordData, count] : wordCounts) {
+            int wordId = tx.query_value<int>(pqxx::prepped("insertWord"), pqxx::params(wordData.word));
+            // std::cout << "adding \"" << word << "\" (" << wordId << "), url: \"" << url << " (" << urlId << "), count: " << count << "\n";
+            tx.exec(pqxx::prepped("insertInvertedIndex"), pqxx::params(wordId, urlId, count, wordData.field));
+
+            wordIds[wordData.word] = wordId;
         }
 
         // insert word positions
         for (int i = 0; i < words.size(); ++i)
-            tx.exec(pqxx::prepped("insertWordPosition"), pqxx::params(urlId, wordIds[words[i]], i + 1));
+            tx.exec(pqxx::prepped("insertWordPosition"), pqxx::params(urlId, wordIds[words[i].word], i + 1));
 
         // Commit the transaction
         tx.commit();

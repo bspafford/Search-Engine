@@ -35,7 +35,7 @@ public:
     static void AddURL(std::string& url);
 
 private:
-    long ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon);
+    long ExecuteSQL(long httpCode, const std::string& url, std::string& title, std::string& description, long contentHash, std::string& favicon, const long documentLength);
     bool IsOriginURL(const std::string url);
     bool IsValidURL(const std::string url);
     // resolves absolute and relative links to absolute

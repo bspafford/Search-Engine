@@ -14,12 +14,12 @@ body {
 }
 
 #searchInput {
-    border: 1px solid green;
     height: 40px;
     width: 700px;
     border-radius: 100vw;
     border: none;
-    padding: 10px 25px;
+    padding: 2px 25px;
+    margin-bottom: 30px;
     font-size: 16px;
 }
 
@@ -30,6 +30,7 @@ body {
 .searchItem {
     display: flex;
     flex-direction: column;
+    margin-bottom: 45px;
 }
 
 .searchItem p {
@@ -37,15 +38,12 @@ body {
 }
 
 .pageLinkBox {
+    display: flex;
+    width: fit-content;
     text-decoration: none;
-    width: min-content;
 }
 
-.pageLinkBox:visited .pageLinkTitle {
-    color: purple;
-}
-
-.pageLinkBox:hover .pageLinkTitle {
+.pageLinkBox:hover + .pageLinkTitle {
     text-decoration: underline;
 }
 
@@ -61,19 +59,31 @@ body {
 }
 
 .pageTitle {
-    font-size: 16px;
+    font-size: 14px;
 }
 
-.pageLink {
-    font-size: 13px;
+div .pageLink {
+    font-size: 10px;
+    color: lightgray;
 }
 
 .searchItem .pageLinkTitle {
-    font-size: 20px;
-    color: blue;
-    margin-top: 5px;
+    font-size: 24px;
+    text-decoration: none;
+    width: fit-content;
+    color: lightblue;
+}
+
+.searchItem .pageDescription {
+    font-size: 14px;
+    color: lightgray;
 }
 
 .pageLinkTitle:hover {
     text-decoration: underline;
 }
+
+.searchItem .pageLinkTitle:visited {
+    color: #CBC3E3;
+}
+
