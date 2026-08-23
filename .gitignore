@@ -2,6 +2,8 @@ build/
 models/
 login.h
 
+helper.txt
+
 compile_commands.json
 
 # C/C++ build artifacts

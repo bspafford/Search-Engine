@@ -91,7 +91,7 @@ std::string TagToString(lxb_dom_node_t* node) {
     const lxb_char_t* name = lxb_tag_name_by_id(node->parent->local_name, &length);
 
     std::string tagName(reinterpret_cast<const char*>(name), length);
-    printf("\033[33mTag Name: %s\033[0m\n", tagName.c_str());
+    // printf("\033[33mTag Name: %s\033[0m\n", tagName.c_str());
     return tagName;
 }
 

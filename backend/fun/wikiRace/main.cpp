@@ -10,12 +10,17 @@
 #include <filesystem>
 #include <stdexcept>
 #include <fstream>
-#include "lexbor/dom/interfaces/element.h"
+#include <lexbor/dom/interfaces/element.h>
+#include "lexbor/html/interfaces/document.h"
 #include "login.h"
+#include "helper.h"
 
 pqxx::connection cx("host=localhost dbname=wikirace user=" + USER + " password=" + PASSWORD);
 std::unordered_map<std::filesystem::path, long> idMap;
 std::unordered_map<long, std::filesystem::path> pathMap;
+llama_model* model = nullptr;
+llama_context* ctx = nullptr;
+const llama_vocab* vocab = nullptr;
 
 static lxb_status_t callback(const lxb_char_t *data, size_t len, void *ctx) {
     std::string* str = static_cast<std::string*>(ctx);
@@ -82,6 +87,7 @@ void AddURL(pqxx::work& tx, long currId, long id) {
     // executesql to add the url to some relational db since i dont really need to crawl cause i already know what pages exist
 
     tx.exec(pqxx::prepped("insert_connection"), pqxx::params(currId, id));
+    tx.exec(pqxx::prepped("increaseAuthority"), pqxx::params(id));
 }
 
 std::string GetTitle(lxb_html_document_t *document, const std::filesystem::path& basePath, const std::filesystem::path& filePath, const std::string& contents) {
@@ -124,6 +130,24 @@ std::string GetTitle(lxb_html_document_t *document, const std::filesystem::path&
     lxb_html_document_clean(document);
     return titleString;
     */
+}
+
+std::string GetEmbedding(lxb_html_document_t *document, const std::filesystem::path& basePath, const std::filesystem::path& filePath, const std::string& contents, const std::string& title) {
+    std::cout << "start embedding\n";
+    // get title and first few lines
+    std::string str = title;// + ". " + intro; // start with only title, add like 1-3 sentences later
+
+    // converted list to string: "[x, y, z, ...]"
+    std::vector<float> embedding = Helper::EmbedText(model, ctx, vocab, str);
+    std::string embedStr = "[";
+    for (size_t i = 0; i < embedding.size(); ++i) {
+        if (i != 0)
+            embedStr += ",";
+        embedStr += std::to_string(embedding[i]);
+    }
+
+    std::cout << "finished embedding\n";
+    return embedStr + "]";
 }
 
 long GetId(pqxx::work& tx, const std::filesystem::path& path, const std::filesystem::path& debugFrom) {
@@ -190,7 +214,7 @@ void ParseFile(pqxx::work& tx, lxb_html_document_t* document, lxb_dom_collection
         if (NormalizeUrl(path)) {
             long localId = GetId(tx, path, localPath);
             if (localId != -1)
-                AddURL(tx, pathId,  localId);
+                AddURL(tx, pathId, localId);
         }
     }
 
@@ -214,6 +238,8 @@ void CrawlFiles(const std::filesystem::path& path, bool firstPass) {
         return;
     }
 
+    // Helper::InitEmbedModel(model, ctx, vocab, "nomic-embed-text-v1.5.Q2_K.gguf");
+
     pqxx::work tx{cx};
 
     // Parse the HTML document
@@ -236,12 +262,13 @@ void CrawlFiles(const std::filesystem::path& path, bool firstPass) {
             std::string contents = GetFileContents(entry);
             if (firstPass) {
                 title = GetTitle(document, path, entry, contents);
+                // embedding = GetEmbedding(document, path, entry, contents, title);
                 filePath = entry.path().lexically_relative(path);
                 NormalizeUrl(filePath);
                 if (idx % 1000 == 0)
                     std::cout << "#" << idx + 1 << ", adding: \"" << filePath << "\", title: \"" << title << "\"\n";
                 ExecuteSQL(tx, filePath, title);
-            } else {
+            } else { // not first pass
                 if (idx % 100 == 0)
                     std::cout << "#" << idx << ", path: " << entry.path().lexically_relative(path) << "\n";
                 ParseFile(tx, document, collection, path, entry, contents);
@@ -255,6 +282,9 @@ void CrawlFiles(const std::filesystem::path& path, bool firstPass) {
 
     // Commit the transaction
     tx.commit();
+
+    lxb_html_document_destroy(document);
+    lxb_dom_collection_destroy(collection, true);
 }
 
 void BuildWikiDB(const std::filesystem::path& path) {
@@ -489,8 +519,8 @@ void ConnectToDB() {
 
     cx.prepare(
         "insert_page",
-        "INSERT INTO wiki(path, title) "
-        "VALUES($1, $2) "
+        "INSERT INTO wiki(path, title, authority) "
+        "VALUES($1, $2, 0) " // set authority to 0 when first making page, so count doesn't go to infinity
         "ON CONFLICT (path) "
         "DO UPDATE SET "
         "path = EXCLUDED.path, "
@@ -529,6 +559,23 @@ void ConnectToDB() {
         "JOIN wiki wt ON c.connection = wt.id "
         "WHERE c.connection = $1"
     );
+
+    cx.prepare(
+        "getNullEmbeddings",
+        "SELECT * FROM wiki WHERE embedding IS NULL OR vector_dims(embedding) = 0"
+    );
+
+    cx.prepare(
+        "UpdateEmbedding",
+        "UPDATE wiki SET embedding = $1 WHERE id = $2"
+    );
+
+    cx.prepare(
+        "increaseAuthority",
+        "UPDATE wiki "
+        "SET authority = authority + 1 "
+        "WHERE id = $1"
+    );
 }
 
 void InitIdMap() {
@@ -545,6 +592,115 @@ void InitIdMap() {
     tx.commit();
 }
 
+void SetEmbeddings() {
+    Helper::InitEmbedModel(model, ctx, vocab);
+
+    // select id, title FROM ... where embeddings = null
+    // convert title to embedding
+    // update embedding where id = id
+    pqxx::work tx{cx};
+    pqxx::result result = tx.exec(pqxx::prepped("getNullEmbeddings"));
+    tx.commit();
+
+    std::cout << "how many results: " << result.size() << "\n";
+
+    long count = 0;
+    for (pqxx::row_ref row : result) {
+        ++count;
+
+        std::string title = row["title"].as<std::string>();
+        if (title.empty())
+            title = row["path"].as<std::string>();
+        
+        std::cout << "#" << count << "/" << result.size() << ": " << title << "\n";
+
+        std::vector<float> embedding = Helper::EmbedText(model, ctx, vocab, title);
+        std::string sql = "UPDATE wiki SET embedding = '[";
+        for (size_t i = 0; i < embedding.size(); ++i) {
+            if (i != 0) sql += ",";
+            sql += std::to_string(embedding[i]);
+        }
+        sql += "]'::vector WHERE id = $1";
+
+        pqxx::work tx{cx};
+        tx.exec(sql, pqxx::params(row["id"].as<long>()));
+        tx.commit();
+    }
+}
+
+// outputs all items in db
+void temp() {
+    std::ofstream file("./temp.txt");
+    if (!file.is_open()) {
+        std::cout << "couldn't open file\n";
+        return;
+    }
+
+    std::string sql = "SELECT * FROM wiki";
+
+    pqxx::work tx{cx};
+    pqxx::result result = tx.exec(sql);
+    tx.commit();
+
+    for (pqxx::row_ref row : result) {
+        file << row["id"].as<std::string>() << "," << row["path"].as<std::string>() << "," << row["title"].as<std::string>() << "\n";
+    }
+
+    file.close();
+}
+
+void outputTemp() {
+    std::ifstream file("./output.txt", std::ios::binary);
+    if (!file.is_open()) {
+        std::cout << "couldn't open file\n";
+        return;
+    }
+
+    constexpr uint32_t embeddingSize = 768;
+    constexpr size_t recordSize = sizeof(uint64_t) + sizeof(uint32_t) + embeddingSize * sizeof(float);
+
+    // get file size in bytes
+    file.seekg(0, std::ios::end);
+    std::streamsize fileSize = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    size_t recordCount = fileSize / recordSize;
+
+    long idx = 0;
+    pqxx::work tx{cx};
+    while (file.peek() != EOF) {
+        ++idx;
+
+        uint64_t id = 0;
+        file.read(reinterpret_cast<char*>(&id), sizeof(id));
+
+        uint32_t count = 0;
+        file.read(reinterpret_cast<char*>(&count), sizeof(count));
+
+        std::vector<float> embedding(count);
+        file.read(reinterpret_cast<char*>(embedding.data()), embedding.size() * sizeof(float));
+
+        std::string embeddingStr = "[";
+        for (size_t i = 0; i < embedding.size(); ++i) {
+            if (i != 0) embeddingStr += ",";
+            embeddingStr += std::to_string(embedding[i]);
+        }
+        embeddingStr += "]";
+
+        tx.exec(pqxx::prepped("UpdateEmbedding"), pqxx::params(embeddingStr, id));
+
+        if (idx % 1000 == 0) {
+            float percent = idx / (float)recordCount * 100.f;
+            printf("\r#%ld / %ld (%f)", idx, recordCount, percent);
+            tx.commit();
+        }
+    }
+    tx.commit();
+
+    std::cout << "\n";
+    file.close();
+}
+
 int main(int argc, char* argv[]) {
     // Path was not in Map: "Academy,_Trenton,_New_Jersey" Coming from: "Mercer_County,_New_Jersey"
     /*
@@ -556,9 +712,12 @@ int main(int argc, char* argv[]) {
     */
 
     ConnectToDB();
+    // temp();
+    // outputTemp();
+    // return 0;
 
     // path
-    if (argc == 2) {
+    if (argc == 2) { // ./build/fun/wikiRace/wikiRace ~/Documents/wiki
         std::cout << "Building Whole DB\n";
         BuildWikiDB(argv[1]);
         InitIdMap();
@@ -570,6 +729,9 @@ int main(int argc, char* argv[]) {
         std::cout << "Building Only Connections Part\n";
         InitIdMap();
         BuildConnections(argv[2]);
+    } else if (argc == 3 && std::strcmp(argv[1], "embed") == 0) {
+        // loop through all items that have null for their embeddings, then update them
+        SetEmbeddings();
     } else if (argc == 3) {
         std::cout << "Finding Shortest Path\n";
         InitIdMap();

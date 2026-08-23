@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(SearchEngine)
 
 set(CMAKE_BUILD_TYPE Debug)
-set(CMAKE_CXX_STANDARD 20) # c++20
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -55,16 +55,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(IXWebSocket)
 
+set(GGML_CUDA ON) # enables GPU support
+
 FetchContent_Declare(
     llama
     GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-    GIT_TAG b10068
+    GIT_TAG b10520
 )
 FetchContent_MakeAvailable(llama)
 
 add_subdirectory(helper)
 add_subdirectory(server)
 add_subdirectory(crawler)
+add_subdirectory(youtube)
 add_subdirectory(external)
 add_subdirectory(fun/contexto)
 add_subdirectory(fun/wikiRace)

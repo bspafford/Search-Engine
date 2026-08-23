@@ -69,7 +69,7 @@ void Init() {
             "SELECT "
                 "ii.wordId, "
                 "ii.urlId, "
-                "SUM(ii.count * field_weights.weight) AS tf, "
+                "SUM(ii.count * COALESCE(field_weights.weight, 1.0)) AS tf, "
 
                 "COUNT(*) OVER ( "
                     "PARTITION BY ii.wordId "
