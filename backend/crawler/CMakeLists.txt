@@ -3,7 +3,6 @@ add_executable(crawler
     Renderer.cpp
     UrlHelper.cpp
     Indexer.cpp
-    ThreadPool.cpp
     Fetcher.cpp
     Database.cpp
     Parser.cpp

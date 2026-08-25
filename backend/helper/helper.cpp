@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <chrono>
 #include <cmath>
+#include <openssl/sha.h>
 
 std::unordered_set<std::string> stopWords;
 
@@ -170,4 +171,16 @@ std::vector<float> EmbedText(llama_model* model, llama_context* ctx, const llama
     return result;
 }
 
+std::string Hash(const std::string& input) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+
+    SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), hash);
+
+    std::stringstream ss;
+    for (unsigned char c : hash) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c);
+    }
+
+    return ss.str();
+}
 } // Helper

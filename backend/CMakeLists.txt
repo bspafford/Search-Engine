@@ -64,6 +64,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBZIM REQUIRED IMPORTED_TARGET libzim)
+
 add_subdirectory(helper)
 add_subdirectory(server)
 add_subdirectory(crawler)

@@ -34,4 +34,5 @@ static void normalize(std::vector<float>& v);
 static std::vector<llama_token> tokenize(const llama_vocab* vocab, const std::string& text);
 std::vector<float> EmbedText(llama_model* model, llama_context* ctx, const llama_vocab* vocab, const std::string& text);
 
+std::string Hash(const std::string& input);
 } // Helper

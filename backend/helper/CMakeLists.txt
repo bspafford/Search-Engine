@@ -1,5 +1,6 @@
 add_library(helper
     helper.cpp
+    ThreadPool.cpp
 )
 
 target_include_directories(helper PUBLIC
@@ -8,6 +9,9 @@ target_include_directories(helper PUBLIC
     ${INSTALL_DIR}/include
 )
 
+find_package(OpenSSL REQUIRED)
+
 target_link_libraries(helper PRIVATE
     llama
+    OpenSSL::Crypto
 )

@@ -1,5 +1,7 @@
 add_executable(wikiRace
     main.cpp
+    WikiParser.cpp
+    WikiDatabase.cpp
 )
 
 # linke to executable
@@ -15,4 +17,5 @@ target_link_libraries(wikiRace PRIVATE
     pqxx
     helper
     llama
+    PkgConfig::LIBZIM
 )

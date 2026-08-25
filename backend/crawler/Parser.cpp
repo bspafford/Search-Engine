@@ -11,7 +11,6 @@
 #include <pqxx/pqxx>
 #include <boost/url.hpp>
 #include <fstream>
-#include <openssl/sha.h>
 
 static size_t write_data(char *contents, size_t size, size_t nmemb, void *userp) {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
@@ -212,7 +211,7 @@ std::string Parser::DownloadFavicon(lxb_html_document_t* document, const std::st
         return "";
 
     // save data to file
-    std::string fileName = Hash(resolvedUrl);
+    std::string fileName = Helper::Hash(resolvedUrl);
     std::ofstream file("/var/www/html/favicons/" + fileName, std::ios::binary);
     file.write(reinterpret_cast<const char*>(data.data()), data.size());
     return fileName;
@@ -382,19 +381,6 @@ bool Parser::IsValidURL(const std::string url) {
     CURLUcode rc = curl_url_set(u, CURLUPART_URL, url.c_str(), 0);
     bool isValid = rc == CURLUE_OK;
     return isValid;
-}
-
-std::string Parser::Hash(const std::string& input) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-
-    SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), hash);
-
-    std::stringstream ss;
-    for (unsigned char c : hash) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c);
-    }
-
-    return ss.str();
 }
 
 bool Parser::VisitedContains(const std::string& url) {

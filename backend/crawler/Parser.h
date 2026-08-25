@@ -53,7 +53,6 @@ private:
     std::string GetFavicon(lxb_html_document_t* document);
     std::string DownloadFavicon(lxb_html_document_t* document, const std::string& origin);
     std::vector<unsigned char> DownloadImage(const std::string& url);
-    std::string Hash(const std::string& input);
 
     int timeoutTime = 10;
     int totalTimeoutTime = 30;
