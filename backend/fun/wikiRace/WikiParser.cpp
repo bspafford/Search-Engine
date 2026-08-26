@@ -10,16 +10,17 @@
 void Parser::InitPool(int threads) {
     threadPool = new ThreadPool(threads);
 
-    size_t count = Database::GetWikiCount();
-    idMap.reserve(count);
-    pathMap.reserve(count);
-    std::cout << "IDs: " << count << "\n";
+    wikiCount = Database::GetWikiCount();
+    idMap.reserve(wikiCount);
+    pathMap.reserve(wikiCount);
+    std::cout << "IDs: " << wikiCount << "\n";
 
     for (pqxx::row_ref row : Database::GetIdAndPathFromWiki()) {
         long id = row[0].as<long>();
         std::string path = row[1].as<std::string>();
-        pathMap.emplace(id, path);
-        idMap.emplace(std::move(path), id);
+        bool hasParsed = row[2].as<bool>();
+        pathMap.emplace(id, std::pair(path, hasParsed));
+        idMap.emplace(std::move(path), std::pair(id, hasParsed));
     }
 }
 
@@ -52,22 +53,34 @@ Parser::~Parser() {
 void Parser::Parse(const std::string& thumbnailsPath, const zim::Archive& archive, const std::string& path, const zim::Entry& entry) {
     threadPool->Enqueue([&thumbnailsPath, &archive, path = std::move(path), entry = std::move(entry)] {
         Parser& parser = Parser::GetParser();
-        std::string contents = entry.getItem().getData();
-        parser.ParsePage(thumbnailsPath, archive, path, contents);
+        parser.ParsePage(thumbnailsPath, archive, path, entry);
     });
 }
 
-void Parser::ParsePage(const std::string& thumbnailsPath, const zim::Archive& archive, const std::string& path, const std::string& contents) {
+void Parser::ParsePage(const std::string& thumbnailsPath, const zim::Archive& archive, const std::string& path, const zim::Entry& entry) {
     lxb_dom_element_t *element;
     lxb_url_t *base_url, *url;
     const lxb_char_t *href, *rel;
     size_t href_len;
 
+    bool hasParsed = false;
+    long id = GetId(path, path, &hasParsed);
+
+    // check to see if has already been parsed
+    // if program crashes, etc, the pages aren't going to update, so dont check them again
+    if (hasParsed) {
+        ++idx;
+        if (idx % 1000 == 0)
+            printf("\033[33m#%ld / %ld, already parsed: %s\033[0m\n", idx.load(), wikiCount.load(), path.c_str());
+        return;
+    }
+
+    std::string contents = entry.getItem().getData();
+
     lxb_status_t status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(contents.c_str()), contents.size());
     if (status != LXB_STATUS_OK)
         printf("status is not OK: lxb_html_document_parse");
 
-    long id = GetId(path, path);
     if (id == -1) {
         std::cerr << "Invalid path id for \"" << id << "\"\n";
         CleanParseFile(document, collection);
@@ -93,10 +106,16 @@ void Parser::ParsePage(const std::string& thumbnailsPath, const zim::Archive& ar
         }
 
         std::string p(reinterpret_cast<const char*>(href), href_len);
-        long localId = GetId(p, path);
+        long localId = GetId(p, path, nullptr);
         if (localId != -1)
             Database::AddConnection(id, localId);
     }
+
+    Database::SetHasParsed(id, true);
+
+    ++idx;
+    if (idx % 100 == 0)
+        printf("#%ld / %ld: %s\n", idx.load(), wikiCount.load(), path.c_str());
 
     CleanParseFile(document, collection);
 }
@@ -124,6 +143,7 @@ void Parser::DownloadThumbnail(const std::filesystem::path& thumbnailsPath, cons
     }
 
     std::string imgSrc(reinterpret_cast<const char*>(src), len);
+    std::string tempPreNorm = imgSrc;
     NormalizeImgSrc(imgSrc);
 
     try {
@@ -150,8 +170,9 @@ void Parser::DownloadThumbnail(const std::filesystem::path& thumbnailsPath, cons
 
     } catch (const std::exception& e) {
         std::cout << "\033[31mFailed: \"" << imgSrc << "\" from \"" << path << "\" (" << id << ")\033[0m\n";
+        std::cout << "pre normalization: " << tempPreNorm << "\n";
         std::cout << e.what() << "\n";
-        throw std::runtime_error("Bad Img Src");
+        // throw std::runtime_error("Bad Img Src");
     }
 }
 
@@ -163,12 +184,14 @@ void Parser::CleanParseFile(lxb_html_document_t* document, lxb_dom_collection_t*
         lxb_html_document_clean(document);
 }
 
-long Parser::GetId(const std::string& path, const std::string& debugFrom) {
+long Parser::GetId(const std::string& path, const std::string& debugFrom, bool* hasParsed) {
     std::lock_guard<std::mutex> lock(idMutex);
 
     auto it = idMap.find(path);
-    if (it != idMap.end()) // cached in map
-        return it->second;
+    if (it != idMap.end()) { // cached in map
+        if (hasParsed) *hasParsed = it->second.second;
+        return it->second.first;
+    }
 
     // std::cout << "Path was not in Map: \"" << path << "\"\nComing from: \"" << debugFrom << "\"\n";
     return -1;
@@ -202,10 +225,10 @@ std::string Parser::urlDecode(const std::string& input) {
 }
 
 void Parser::NormalizeImgSrc(std::string& path) {
+    while(path.starts_with("../"))
+        path.erase(path.begin(), path.begin() + 3);
     if (path.starts_with("./"))
         path.erase(path.begin(), path.begin() + 2);
-    if (path.starts_with("../"))
-        path.erase(path.begin(), path.begin() + 3);
 
     path = urlDecode(path);
 }

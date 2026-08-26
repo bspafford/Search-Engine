@@ -1,6 +1,7 @@
 build/
 models/
 login.h
+paths.txt
 
 helper.txt
 

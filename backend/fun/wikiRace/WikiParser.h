@@ -10,6 +10,7 @@
 #include <lexbor/url/url.h>
 #include <pqxx/pqxx>
 #include <zim/archive.h>
+#include <atomic>
 
 class ThreadPool;
 
@@ -34,7 +35,7 @@ public:
     static void NormalizeImgSrc(std::string& path);
 
 private:
-    void ParsePage(const std::string& thumbnailsPath, const zim::Archive& archive, const std::string& path, const std::string& contents);
+    void ParsePage(const std::string& thumbnailsPath, const zim::Archive& archive, const std::string& path, const zim::Entry& entry);
     void DownloadThumbnail(const std::filesystem::path& thumbnailsPath, const zim::Archive& archive, lxb_html_document_t* document, lxb_dom_collection_t* collection, long id, const std::string& path);
     void AddURL(pqxx::work& tx, long currId, long id);
 
@@ -46,12 +47,17 @@ private:
     lxb_html_document_t* document = nullptr;
     lxb_dom_collection_t* collection = nullptr;
 
-    static long GetId(const std::string& path, const std::string& debugFrom);
+    static long GetId(const std::string& path, const std::string& debugFrom, bool* hasParsed);
 
-    static inline std::unordered_map<std::filesystem::path, long> idMap;
-    static inline std::unordered_map<long, std::filesystem::path> pathMap;
+    // path, { id, hasParsed }
+    static inline std::unordered_map<std::string, std::pair<long, bool>> idMap;
+    // id, { path, hasParsed }
+    static inline std::unordered_map<long, std::pair<std::string, bool>> pathMap;
 
     static inline ThreadPool* threadPool = nullptr;
 
     static inline std::mutex idMutex;
+
+    static inline std::atomic<long> idx = 0;
+    static inline std::atomic<long> wikiCount = 0;
 };

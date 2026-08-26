@@ -15,6 +15,8 @@ public:
     // Tells main thread to wait until all tasks are finished before quitting the program
     static void Wait();
 
+    long GetQueueSize() { return tasks.size(); };
+
 private:
     std::vector<std::thread> threads;
     std::mutex queueMutex;

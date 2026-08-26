@@ -22,6 +22,9 @@
 #include <zim/entry.h>
 #include <zim/item.h>
 
+// TODO
+// queue for database threadpool is backing up and getting way to big, need to either speed it up, or pause parser until there is room
+
 pqxx::connection cx("host=localhost dbname=wikirace user=" + USER + " password=" + PASSWORD);
 std::unordered_map<std::filesystem::path, long> idMap;
 std::unordered_map<long, std::filesystem::path> pathMap;
@@ -67,7 +70,7 @@ void BuildConnections(const std::filesystem::path& zimPath, const std::string& t
 
     long idx = 0;
     long redirectCount = 0;
-    for(auto& entry : archive.iterByTitle()) {
+    for(auto& entry : archive.iterByTitle()) { // for every file in the .zim
         if (IsRedirect(entry)) { 
             ++redirectCount;
             if (redirectCount % 1000 == 0) {
@@ -509,54 +512,66 @@ int main(int argc, char* argv[]) {
     // OutputWikiToFile();
     // InputEmbeddingsFromFile();
     // return 0;
-    std::string tempPath = "/home/ben/.local/share/kiwix-desktop/wikipedia_en_top1m_maxi_2026-04.zim"; // temp
-    std::string basePath = "/media/ben/902a7657-0ecf-43a9-bb62-efbb62280115/wikiThumbnails";
 
-    // download image
-    // parse file
-    // entry.gettitle.getdata()?
+    // read in paths from paths.txt
+    std::ifstream pathsFile("./fun/paths.txt");
+    if (!pathsFile.is_open())
+        throw std::runtime_error("Could not find paths.txt inside ./fun/");
 
-    Database::InitPool(10);
-    Parser::InitPool(10);
+    std::string zimPath, thumbnailsPath;
+    std::getline(pathsFile, zimPath);
+    std::getline(pathsFile, thumbnailsPath);
+    pathsFile.close();
+
+    Database::InitPool(20);
+    Parser::InitPool(6); // 10: 1:03, 1: 1:42, 5: 1:00
 
     /*
-    std::string str = "0c70a452f799bfe840676ee341124611/38-45_clerke_metallic.jpg";
-    zim::Archive archive(tempPath);
+    std::cout << "start\n";
+    // std::string str = "./_assets_/0c70a452f799bfe840676ee341124611/Ethyl-J_svg.svg.png";
+    // std::string str = "_assets_/0c70a452f799bfe840676ee341124611/Ethyl-J_svg.svg.png";
+    std::string str = "0c70a452f799bfe840676ee341124611";///Ethyl-J_svg";
+    std::cout << "Checking for \"" << str << "\"\n";
+    zim::Archive archive(zimPath);
+    std::cout << "after archive\n";
+    long idx = 0;
     for (auto& entry : archive.iterByPath()) {
+        if (++idx % 100000 == 0)
+            std::cout << "#" << idx << "\n";
         std::string path = entry.getPath();
         if (path.find(str) != std::string::npos)
             std::cout << path << "\n";
     }
     return 0;
-    */
+    //*/
     /*
-    zim::Archive archive(tempPath);
-    std::string str = "../_assets_/c8f24dc75f9c782269c846c9b17e400f/.hackGULogo.png";
+    zim::Archive archive(zimPath);
+    std::string str = "./_assets_/0c70a452f799bfe840676ee341124611/Ethyl-J_svg.svg.png";
     Parser::NormalizeImgSrc(str);
     std::cout << "str: " << str << "\n";
     zim::Entry entry = archive.getEntryByPath(str);
     std::cout << entry.getTitle() << "\n";
     return 0;
-    */
+    //*/
 
-    std::cout << "building connections\n";
-    BuildConnections(tempPath, basePath);
-    ThreadPool::Wait();
+    // std::cout << "building connections\n";
+    // BuildConnections(zimPath, thumbnailsPath);
+    // ThreadPool::Wait();
 
-    return 0;
+    // return 0;
 
     // path
-    if (argc == 2) { // ./build/fun/wikiRace/wikiRace ~/Documents/wiki
-        std::cout << "Building Whole DB\n";
-        BuildWikiDB(argv[1]);
-        BuildConnections(argv[1], basePath);
-    } else if (argc == 3 && std::strcmp(argv[1], "wiki") == 0) {
+    // if (argc == 1) { // ./build/fun/wikiRace/wikiRace ~/Documents/wiki
+        // std::cout << "Building Whole DB\n";
+        // BuildWikiDB(zimPath);
+        // BuildConnections(zimPath, thumbnailsPath);
+    if (argc == 2 && std::strcmp(argv[1], "wiki") == 0) {
         std::cout << "Building Only Wiki Part\n";
-        BuildWikiDB(argv[2]);
-    } else if (argc == 3 && std::strcmp(argv[1], "conn") == 0) {
+        BuildWikiDB(zimPath);
+    } else if (argc == 2 && std::strcmp(argv[1], "conn") == 0) {
         std::cout << "Building Only Connections Part\n";
-        BuildConnections(argv[2], basePath);
-    } else if (argc == 3 && std::strcmp(argv[1], "embed") == 0) {
+        BuildConnections(zimPath, thumbnailsPath);
+    } else if (argc == 2 && std::strcmp(argv[1], "embed") == 0) {
         // loop through all items that have null for their embeddings, then update them
         SetEmbeddings();
     } else if (argc == 3) {
