@@ -3,7 +3,6 @@
 #include <pqxx/pqxx>
 #include <atomic>
 #include <vector>
-#include <unordered_set>
 
 class ThreadPool;
 
@@ -25,10 +24,11 @@ public:
     }
 
     static size_t GetWikiCount();
-    static pqxx::result GetIdAndPathFromWiki();
+    static pqxx::result GetIdAndPathFromWiki(long limit = -1, long offset = -1);
     static void AddImgHash(long id, const std::string& hash);
     static void AddConnection(long fromId, long toId);
     static void SetHasParsed(long id, bool hasParsed);
+    static void UploadEmbeddings(const long id, const std::string& full768);
 
 private:
     pqxx::connection cx;
@@ -39,4 +39,5 @@ private:
 
     static inline std::atomic<long> count = 0;
     std::atomic<long> idx = 0;
+    std::atomic<long> parsedIdx = 0;
 };

@@ -13,9 +13,13 @@ target_include_directories(wikiRace PRIVATE
 )
 
 target_link_libraries(wikiRace PRIVATE
+    helper
     lexbor
     pqxx
-    helper
     llama
     PkgConfig::LIBZIM
+    uwebsockets
+    usockets
+    z
+    libcurl
 )

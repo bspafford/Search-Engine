@@ -115,7 +115,7 @@ void Parser::ParsePage(const std::string& thumbnailsPath, const zim::Archive& ar
 
     ++idx;
     if (idx % 100 == 0)
-        printf("#%ld / %ld: %s\n", idx.load(), wikiCount.load(), path.c_str());
+        printf("#%ld / %ld | %ld thread size | %s\n", idx.load(), wikiCount.load(), threadPool->GetQueueSize(), path.c_str());
 
     CleanParseFile(document, collection);
 }

@@ -21,6 +21,9 @@
 #include <zim/archive.h>
 #include <zim/entry.h>
 #include <zim/item.h>
+#include <App.h>
+#include <nlohmann/json.hpp>
+#include <curl/curl.h>
 
 // TODO
 // queue for database threadpool is backing up and getting way to big, need to either speed it up, or pause parser until there is room
@@ -70,7 +73,7 @@ void BuildConnections(const std::filesystem::path& zimPath, const std::string& t
 
     long idx = 0;
     long redirectCount = 0;
-    for(auto& entry : archive.iterByTitle()) { // for every file in the .zim
+    for(auto& entry : archive.iterEfficient()) { // for every file in the .zim
         if (IsRedirect(entry)) { 
             ++redirectCount;
             if (redirectCount % 1000 == 0) {
@@ -507,6 +510,141 @@ void BuildWikiDB(std::string zimPath) {
     tx.commit();
 }
 
+void CreateImageFile(const std::filesystem::path& thumbnailsPath, const std::string& path, const std::vector<uint8_t>& data) {
+    // save file to computer
+
+    std::ofstream img(thumbnailsPath / path, std::ios::binary);
+    if (!img.is_open()) {
+        printf("Failed to open path: \"%s\"\n", path.c_str());
+        return;
+    }
+
+    img.write(reinterpret_cast<const char*>(data.data()), data.size());
+
+    img.close();
+}
+
+void Server(const std::filesystem::path& thumbnailsPath) {
+    int port = 8080;
+
+    CURL* curl = curl_easy_init();
+
+    uWS::App().get("/GetCount", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+
+        // std::string_view data = req->getQuery("data");
+        // std::cout << req->getUrl() << ", data: " << data;
+        // nlohmann::json json(data);
+
+        std::cout << "getting count\n";
+
+        long count = Database::GetWikiCount();
+        std::cout << "count: " << count << "\n";
+        nlohmann::json json({ { "count", count } });
+
+        res->writeHeader("Content-Type", "application/json");
+        res->end(json.dump());
+    })
+    .get("/GetIdPathParsed", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+
+        std::string_view d = req->getQuery("data");
+        nlohmann::json data = nlohmann::json::parse(d);
+
+        std::cout << "get id path parsed: " << data["limit"].get<long>() << ", offset: " << data["offset"].get<long>() << "\n";
+
+        nlohmann::json json;
+        for (pqxx::row_ref row : Database::GetIdAndPathFromWiki(data["limit"].get<long>(), data["offset"].get<long>())) {
+            long id = row[0].as<long>();
+            std::string path = row[1].as<std::string>();
+            bool hasParsed = row[2].as<bool>();
+            json.emplace_back(nlohmann::json{ { "id", id }, { "path", path }, { "hasParsed", hasParsed } });
+        }
+
+        res->writeHeader("Content-Type", "application/json");
+        res->end(json.dump());
+    })
+    .post("/AddImgPath", [&curl, &thumbnailsPath](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+        // std::cout << "add img path\n";
+
+        std::string_view idStr = req->getQuery("id");
+
+        long id = 0;
+        std::from_chars(idStr.data(), idStr.data() + idStr.size(), id);
+        std::string_view pathView = req->getQuery("path");
+        std::string path(pathView.begin(), pathView.end());
+
+        int decodedLength = 0;
+        char* decodedPath = curl_easy_unescape(curl, path.c_str(), 0, &decodedLength);
+        std::string imgPath = Helper::Hash(decodedPath);
+        curl_free(decodedPath);
+
+        Database::AddImgHash(id, imgPath);
+
+        res->onAborted([]() { std::cout << "Request Aborted: /AddImgPath\n"; });
+
+        res->onData([res, imgPath, thumbnailsPath, data = std::vector<uint8_t>()](std::string_view chunk, bool isLast) mutable {
+
+            data.insert(data.end(),
+                        reinterpret_cast<const uint8_t*>(chunk.data()),
+                        reinterpret_cast<const uint8_t*>(chunk.data()) + chunk.size());
+
+            if (isLast) {
+                // actually need to save the image
+                CreateImageFile(thumbnailsPath, imgPath, data);
+
+                res->end();
+            }
+        });
+    })
+    .post("/AddConnections", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+        res->onAborted([]() { std::cout << "Request Aborted: /AddConnections\n"; });
+
+        res->onData([body = std::string{}, res](std::string_view chunk, bool isLast) mutable {
+            body.append(chunk);
+
+            if (isLast) {
+                nlohmann::json data = nlohmann::json::parse(body);
+                Database::AddConnection(data["fromId"].get<long>(), data["toId"].get<long>());
+
+                res->end();
+            }
+        });
+    })
+    .post("/SetHasParsed", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+        res->onAborted([]() { std::cout << "Request Aborted: /SetHasParsed\n"; });
+
+        res->onData([body = std::string{}, res](std::string_view chunk, bool isLast) mutable {
+            body.append(chunk);
+
+            if (isLast) {
+                nlohmann::json data = nlohmann::json::parse(body);
+                Database::SetHasParsed(data["id"].get<long>(), true);
+
+                res->end();
+            }
+        });
+    })
+    .post("/UploadEmbeddings", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+        res->onAborted([]() { std::cout << "Request Aborted: /UploadEmbeddings\n"; });
+
+        res->onData([body = std::string{}, res](std::string_view chunk, bool isLast) mutable {
+            body.append(chunk);
+
+            if (isLast) {
+                nlohmann::json data = nlohmann::json::parse(body);
+                Database::UploadEmbeddings(data["id"].get<long>(), data["768"].dump());
+
+                res->end();
+            }
+        });
+    })
+    .listen(port, [port](auto *listenSocket) {
+        if (listenSocket) {
+            std::cout << "Listening on " << port << "\n";
+        }
+    })
+    .run();
+}
+
 int main(int argc, char* argv[]) {
     ConnectToDB();
     // OutputWikiToFile();
@@ -524,7 +662,9 @@ int main(int argc, char* argv[]) {
     pathsFile.close();
 
     Database::InitPool(20);
-    Parser::InitPool(6); // 10: 1:03, 1: 1:42, 5: 1:00
+
+    if (argc != 2 || strcmp(argv[1], "server") != 0) // dont init parser if running server
+        Parser::InitPool(6); // 10: 1:03, 1: 1:42, 5: 1:00
 
     /*
     std::cout << "start\n";
@@ -574,6 +714,8 @@ int main(int argc, char* argv[]) {
     } else if (argc == 2 && std::strcmp(argv[1], "embed") == 0) {
         // loop through all items that have null for their embeddings, then update them
         SetEmbeddings();
+    } else if (argc == 2 && std::strcmp(argv[1], "server") == 0) {
+        Server(thumbnailsPath);
     } else if (argc == 3) {
         std::cout << "Finding Shortest Path\n";
         GetShortestPath(argv[1], argv[2]);
