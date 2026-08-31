@@ -544,8 +544,23 @@ void Server(const std::filesystem::path& thumbnailsPath) {
         res->writeHeader("Content-Type", "application/json");
         res->end(json.dump());
     })
-    .get("/GetIdPathParsed", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+    .post("/AddWikiSite", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+        res->onAborted([]() { std::cout << "Request Aborted: /AddConnections\n"; });
 
+        res->onData([body = std::string{}, res](std::string_view chunk, bool isLast) mutable {
+            body.append(chunk);
+
+            if (isLast) {
+                nlohmann::json data = nlohmann::json::parse(body);
+                pqxx::work tx{cx};
+                tx.exec(pqxx::prepped("insert_page"), pqxx::params(data["path"].get<std::string>(), data["title"].get<std::string>()));
+                tx.commit();
+
+                res->end();
+            }
+        });
+    })
+    .get("/GetIdPathParsed", [](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
         std::string_view d = req->getQuery("data");
         nlohmann::json data = nlohmann::json::parse(d);
 
@@ -603,7 +618,8 @@ void Server(const std::filesystem::path& thumbnailsPath) {
 
             if (isLast) {
                 nlohmann::json data = nlohmann::json::parse(body);
-                Database::AddConnection(data["fromId"].get<long>(), data["toId"].get<long>());
+                for (nlohmann::json d : data)
+                    Database::AddConnection(d["fromId"].get<long>(), d["toId"].get<long>());
 
                 res->end();
             }
