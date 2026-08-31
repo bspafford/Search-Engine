@@ -23,17 +23,21 @@ public:
         return database;
     }
 
+    // Add Wiki Site
+    static void AddWikiSite(const std::string& path, const std::string& title);
+
+    // Add Connections
     static nlohmann::json GetIdAndPathFromWiki();
     static void AddImgPath(long id, const std::string& path, const std::vector<uint8_t>& data);
     static void AddConnection(long fromId, long toId);
     static void SetHasParsed(long id, bool hasParsed);
     static void UploadEmbeddings(long id, std::vector<float>& full768);
 
+    static long GetThreadPoolSize();
+
 private:
     nlohmann::json CurlGet(const std::string& apiPath, const nlohmann::json& params);
     nlohmann::json CurlPost(const std::string& apiPath, const nlohmann::json& params);
-
-    std::vector<std::pair<long, long>> contents;
 
     static inline ThreadPool* threadPool = nullptr;
 
@@ -43,4 +47,6 @@ private:
     const std::string ip = "10.0.0.148:8080";
 
     CURL* curl = nullptr;
+
+    nlohmann::json contents;
 };

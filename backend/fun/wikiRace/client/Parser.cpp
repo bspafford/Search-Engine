@@ -49,6 +49,14 @@ void Parser::Init() {
     collection = lxb_dom_collection_make(&document->dom_document, 128);
     if (collection == NULL)
         throw std::runtime_error("Collection is NULL\n");
+
+    redirectDocument = lxb_html_document_create();
+    if (redirectDocument == NULL)
+        printf("Document is NULL\n");
+
+    redirectCollection = lxb_dom_collection_make(&redirectDocument->dom_document, 128);
+    if (redirectCollection == NULL)
+        throw std::runtime_error("Collection is NULL\n");
 }
 
 Parser::~Parser() {
@@ -63,17 +71,137 @@ Parser::~Parser() {
         lxb_dom_collection_destroy(collection, true);
         collection = nullptr;
     }
+
+    if (redirectDocument) {
+        lxb_html_document_destroy(redirectDocument);
+        redirectDocument = nullptr;
+    }
+
+    if (redirectCollection) {
+        lxb_dom_collection_destroy(redirectCollection, true);
+        redirectCollection = nullptr;
+    }
 }
 
 void Parser::Parse(const zim::Archive& archive, const std::string& path, const zim::Entry& entry) {
     //threadPool->Enqueue([&archive, path = std::move(path), entry = std::move(entry)] {
-    threadPool->Enqueue([&archive, path, entry] {
+    threadPool->Enqueue([&archive, path = std::move(path), entry] {
         Parser& parser = Parser::GetParser();
         parser.ParsePage(archive, path, entry);
     });
 }
 
-void Parser::ParsePage(const zim::Archive& archive, const std::string& path, const zim::Entry& entry) {
+void Parser::NormalizeRedirectPath(std::string& path) {
+    if (path._Starts_with("0;URL='"))
+        path.erase(0, 7);
+    if (path.back() == '\'')
+        path.pop_back();
+
+    size_t pos = path.find('#');
+    if (pos != std::string::npos)
+        path.erase(pos);
+}
+
+bool Parser::IsRedirect(const zim::Archive& archive, lxb_html_document_t* document, lxb_dom_collection_t* collection, std::string& path, std::string* redirectsTo) {
+    // see if has meta tag in head, see if has http-equiv, see if it = "refresh", parse the content
+    // recurse until find final, or value in map
+    // add all sites to redirect map
+    // Find all <a> elements
+
+    size_t len;
+
+    NormalizeImgSrc(path);
+
+    if (!archive.hasEntryByPath(path)) // invalid path
+        return false;
+
+    zim::Entry entry = archive.getEntryByPath(path);
+    if (!redirectsTo && entry.isRedirect()) // early out: just returns if its a redirect and if not recursing
+        return true;
+    
+    while (entry.isRedirect()) // if zim redirect, get where it redirects to
+        entry = entry.getRedirectEntry();
+
+    std::string contents = entry.getItem().getData();
+    //std::cout << "contents: " << contents << "\n";
+
+    lxb_status_t status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(contents.c_str()), contents.size());
+    if (status != LXB_STATUS_OK)
+        printf("status is not OK: lxb_html_document_parse");
+
+    status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), collection, (const lxb_char_t*)"meta", 4);
+    if (status != LXB_STATUS_OK)
+        printf("status is not OK 1.\n");
+
+    // Iterate links, extract href, and resolve each URL
+    size_t count = lxb_dom_collection_length(collection);
+    if (count == 0) { // no meta tags, not a redirect
+        CleanParseFile(document, collection);
+        return false;
+    }
+
+    lxb_dom_element_t* element = lxb_dom_collection_element(collection, 0);
+    const lxb_char_t* httpEquiv = lxb_dom_element_get_attribute(element, (const lxb_char_t*)"http-equiv", 10, &len);
+    if (!httpEquiv) { // if no http-equiv on first meta tag, not a redirect
+        CleanParseFile(document, collection);
+        return false;
+    }
+
+    std::string refresh(reinterpret_cast<const char*>(httpEquiv), len);
+    if (refresh != "refresh") {
+        CleanParseFile(document, collection);
+        return false;
+    }
+
+    const lxb_char_t* content = lxb_dom_element_get_attribute(element, (const lxb_char_t*)"content", 7, &len);
+    if (!content) {
+        CleanParseFile(document, collection);
+        return false;
+    }
+
+    CleanParseFile(document, collection);
+
+    // need to recurse and check if that is a valid path, another redirect, or an actual site
+        // also make sure to check if entry.isredirect() && this custom http-equiv="refresh" also
+
+    // there are two things that can happen
+        // the current page that im on (the one from looping through the .zim) is a redirect
+            // parse the page, see if redirect, return true
+        // or its one of the links.
+            // parse the page, see if redirect, go to, repeat
+
+
+    if (!redirectsTo) // if null, dont recurse
+        return true;
+
+    long fromId = GetId(path, path, nullptr);
+    long toId;
+    if (GetRedirect(fromId, &toId)) { // if redirect already in list, no need to continue searching
+        std::string toPath = GetPath(toId);
+        if (toPath.empty())
+            throw std::runtime_error("Invalid toPath: " + std::to_string(toId) + "\n");
+
+        if (redirectsTo) *redirectsTo = toPath;
+        return true;
+    }
+
+    std::string redirUrl(reinterpret_cast<const char*>(content), len);
+    NormalizeRedirectPath(redirUrl);
+    try {
+        bool isRedirect = IsRedirect(archive, document, collection, redirUrl, redirectsTo);
+        std::string finalPath = isRedirect ? *redirectsTo : redirUrl;
+
+        InsertRedirect(fromId, GetId(finalPath, finalPath, nullptr));
+
+        if (redirectsTo) *redirectsTo = finalPath;
+        return true;
+    } catch (const std::exception& e) {
+        printf("Unabled to find redirUrl: \"%s\"\n", redirUrl.c_str());
+        throw std::runtime_error(e.what());
+    }
+}
+
+void Parser::ParsePage(const zim::Archive& archive, std::string path, const zim::Entry& entry) {
     lxb_dom_element_t *element;
     lxb_url_t *base_url, *url;
     const lxb_char_t *href, *rel;
@@ -103,10 +231,14 @@ void Parser::ParsePage(const zim::Archive& archive, const std::string& path, con
         ++idx;
         if (idx % 1000 == 0)
             printf("\033[33m#%s / %s, already parsed: %s\033[0m\n", Helper::PrettyPrint(idx.load()), Helper::PrettyPrint(wikiCount.load()), path.c_str());
-        return;
+        //return;
     }
 
     std::string contents = entry.getItem().getData();
+
+    // Dont parse page and add connection if redirect
+    if (IsRedirect(archive, redirectDocument, redirectCollection, path, nullptr))
+        return;
 
     lxb_status_t status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(contents.c_str()), contents.size());
     if (status != LXB_STATUS_OK)
@@ -124,14 +256,17 @@ void Parser::ParsePage(const zim::Archive& archive, const std::string& path, con
     size_t count = lxb_dom_collection_length(collection);
     for (size_t i = 0; i < count; i++) {
         element = lxb_dom_collection_element(collection, i);
-
         href = lxb_dom_element_get_attribute(element, (const lxb_char_t *) "href", 4, &href_len);
         if (href == NULL) {
             // std::cout << "href is null\n";
             continue;
         }
 
-        std::string p(reinterpret_cast<const char*>(href), href_len);
+        std::string p = reinterpret_cast<const char*>(href);
+        std::string redirPath;
+        if (IsRedirect(archive, redirectDocument, redirectCollection, p, &redirPath))
+            p = redirPath;
+
         long localId = GetId(p, path, nullptr);
         if (localId != -1)
             Database::AddConnection(id, localId);
@@ -262,6 +397,19 @@ long Parser::GetId(const std::string& path, const std::string& debugFrom, bool* 
     return -1;
 }
 
+std::string Parser::GetPath(const long id) {
+    std::lock_guard<std::mutex> lock(pathMutex);
+
+    auto it = pathMap.find(id);
+    if (it != pathMap.end()) { // cached in map
+        //printf("\033[32mPath Found: \"\033[33m%s\033[32m\"\n", path.c_str());
+        return it->second.first;
+    }
+
+    //printf("Path was not in Map: \"%s\"\nComing from: \"%s\"%ld\n", path.c_str(), debugFrom.c_str(), idMap.size());
+    return "";
+}
+
 // path decoder
 // e.g. '%2C' -> ','
 int Parser::hex(char c) {
@@ -298,39 +446,19 @@ void Parser::NormalizeImgSrc(std::string& path) {
     path = urlDecode(path);
 }
 
-/*
-static const char base64_chars[] =
-"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-"abcdefghijklmnopqrstuvwxyz"
-"0123456789+/";
-
-std::string Parser::Base64Encode(const uint8_t* data, size_t len) {
-    std::string result;
-    result.reserve(((len + 2) / 3) * 4);
-
-    for (size_t i = 0; i < len; i += 3) {
-        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
-
-        if (i + 1 < len)
-            n |= static_cast<uint32_t>(data[i + 1]) << 8;
-
-        if (i + 2 < len)
-            n |= static_cast<uint32_t>(data[i + 2]);
-
-        result += base64_chars[(n >> 18) & 63];
-        result += base64_chars[(n >> 12) & 63];
-
-        if (i + 1 < len)
-            result += base64_chars[(n >> 6) & 63];
-        else
-            result += '=';
-
-        if (i + 2 < len)
-            result += base64_chars[n & 63];
-        else
-            result += '=';
-    }
-
-    return result;
+void Parser::InsertRedirect(long from, long to) {
+    std::lock_guard<std::mutex> lock(redirectMutex);
+    
+    redirectMap.insert({ from, to });
 }
-*/
+
+bool Parser::GetRedirect(long from, long* to) {
+    std::lock_guard<std::mutex> lock(redirectMutex);
+    
+    auto it = redirectMap.find(from);
+    if (it != redirectMap.end()) {
+        if (to) *to = it->second;
+        return true;
+    }
+    return false;
+}

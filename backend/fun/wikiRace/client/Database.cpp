@@ -19,6 +19,14 @@ void Database::Init() {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
 }
 
+void Database::AddWikiSite(const std::string& path, const std::string& title) {
+    threadPool->Enqueue([path, title] {
+        Database& database = Database::GetDatabase();
+
+        database.CurlPost("/AddWikiSite", { { "path", path }, { "title", title } });
+    });
+}
+
 nlohmann::json Database::GetIdAndPathFromWiki() {
     nlohmann::json result = nlohmann::json::array();
     bool done = false;
@@ -41,6 +49,7 @@ nlohmann::json Database::GetIdAndPathFromWiki() {
             }
 
             offset += data.size();
+            break;
         }
 
         {
@@ -87,12 +96,33 @@ void Database::AddImgPath(long id, const std::string& path, const std::vector<ui
 }
 
 void Database::AddConnection(long fromId, long toId) {
-    threadPool->Enqueue([fromId, toId] {
+    bool done = false;
+    std::condition_variable cv;
+    std::mutex m;
+    threadPool->Enqueue([fromId, toId, &done, &m, &cv] {
         Database& database = Database::GetDatabase();
 
-        // also increase authority
-        database.CurlPost("/AddConnections", { { "fromId", fromId }, { "toId", toId } });
-    });
+        database.contents.push_back({ { "fromId", fromId }, { "toId", toId } });
+
+        if (database.contents.size() >= 10000) {
+            // also increases authority
+            database.CurlPost("/AddConnections", database.contents);
+
+            database.contents.clear();
+
+            printf("\033[34mAdded to Database: %ld -> %ld | %ld thread size\033[0m\n", fromId, toId, threadPool->GetQueueSize());
+        }
+
+        {
+            std::lock_guard lock(m);
+            done = true;
+        }
+
+        cv.notify_one();
+        });
+
+    std::unique_lock lock(m);
+    cv.wait(lock, [&] { return done; });
 }
 
 void Database::SetHasParsed(long id, bool hasParsed) {
@@ -175,4 +205,8 @@ nlohmann::json Database::CurlPost(const std::string& apiPath, const nlohmann::js
     if (contents.empty())
         contents = "{}";
     return nlohmann::json::parse(contents);
+}
+
+long Database::GetThreadPoolSize() {
+    return threadPool->GetQueueSize();
 }
