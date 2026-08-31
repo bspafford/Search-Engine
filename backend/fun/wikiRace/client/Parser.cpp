@@ -102,96 +102,73 @@ void Parser::NormalizeRedirectPath(std::string& path) {
         path.erase(pos);
 }
 
-bool Parser::IsRedirect(const zim::Archive& archive, lxb_html_document_t* document, lxb_dom_collection_t* collection, std::string& path, std::string* redirectsTo) {
+bool Parser::IsRedirect(const zim::Archive& archive, std::string& path, std::string* redirectsTo) {
     // see if has meta tag in head, see if has http-equiv, see if it = "refresh", parse the content
     // recurse until find final, or value in map
     // add all sites to redirect map
     // Find all <a> elements
 
-    size_t len;
+    NormalizeImgSrc(path); // removes './' and decodes
+    NormalizeRedirectPath(path); // removes '#' and after
 
-    NormalizeImgSrc(path);
-
-    if (!archive.hasEntryByPath(path)) // invalid path
+    long fromId = GetId(path, path, nullptr);
+    if (fromId != -1) { // is in idMap, which should already only contain valid, non redirect paths
+        if (redirectsTo) *redirectsTo = path;
         return false;
+    }
 
-    zim::Entry entry = archive.getEntryByPath(path);
-    if (!redirectsTo && entry.isRedirect()) // early out: just returns if its a redirect and if not recursing
+    // find if in redirect map, using path
+    // if path in map, return second
+   long toId;
+    if (redirectsTo && GetRedirect(path, &toId)) {
+        *redirectsTo = GetPath(toId);
+        if (redirectsTo->empty())
+            throw std::runtime_error("Redirect is Empty: " + path);
         return true;
+    }
     
-    while (entry.isRedirect()) // if zim redirect, get where it redirects to
-        entry = entry.getRedirectEntry();
+    std::string contents;
+    try { // if entry was found
+        size_t len;
+        zim::Entry entry = archive.getEntryByPath(path);
+        bool isRedirect = entry.isRedirect();
+        if (!redirectsTo && isRedirect) // early out: just returns if its a redirect and if not recursing
+            return true;
 
-    std::string contents = entry.getItem().getData();
-    //std::cout << "contents: " << contents << "\n";
+        while (entry.isRedirect()) // if zim redirect, get where it redirects to
+            entry = entry.getRedirectEntry();
 
-    lxb_status_t status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(contents.c_str()), contents.size());
-    if (status != LXB_STATUS_OK)
-        printf("status is not OK: lxb_html_document_parse");
+        // then again test if its a valid id inside of idMap
+        long fromId = GetId(entry.getPath(), path, nullptr);
+        if (fromId != -1) {
+            if (redirectsTo) *redirectsTo = path;
+            return isRedirect;
+        }
 
-    status = lxb_dom_elements_by_tag_name(lxb_dom_interface_element(document->head), collection, (const lxb_char_t*)"meta", 4);
-    if (status != LXB_STATUS_OK)
-        printf("status is not OK 1.\n");
-
-    // Iterate links, extract href, and resolve each URL
-    size_t count = lxb_dom_collection_length(collection);
-    if (count == 0) { // no meta tags, not a redirect
-        CleanParseFile(document, collection);
+        contents = entry.getItem().getData();
+    } catch (...) { // if entry was not found
         return false;
     }
 
-    lxb_dom_element_t* element = lxb_dom_collection_element(collection, 0);
-    const lxb_char_t* httpEquiv = lxb_dom_element_get_attribute(element, (const lxb_char_t*)"http-equiv", 10, &len);
-    if (!httpEquiv) { // if no http-equiv on first meta tag, not a redirect
-        CleanParseFile(document, collection);
+    std::string redirStr = "<meta http-equiv=\"refresh\" content=\"0;URL='";
+    size_t start = contents.find(redirStr);
+    if (start == std::string::npos)
         return false;
-    }
 
-    std::string refresh(reinterpret_cast<const char*>(httpEquiv), len);
-    if (refresh != "refresh") {
-        CleanParseFile(document, collection);
-        return false;
-    }
-
-    const lxb_char_t* content = lxb_dom_element_get_attribute(element, (const lxb_char_t*)"content", 7, &len);
-    if (!content) {
-        CleanParseFile(document, collection);
-        return false;
-    }
-
-    CleanParseFile(document, collection);
-
-    // need to recurse and check if that is a valid path, another redirect, or an actual site
-        // also make sure to check if entry.isredirect() && this custom http-equiv="refresh" also
-
-    // there are two things that can happen
-        // the current page that im on (the one from looping through the .zim) is a redirect
-            // parse the page, see if redirect, return true
-        // or its one of the links.
-            // parse the page, see if redirect, go to, repeat
-
+    size_t end = contents.find("'\" />", start);
+    if (end == std::string::npos)
+        throw std::runtime_error("No close '/>' tag");
 
     if (!redirectsTo) // if null, dont recurse
         return true;
 
-    long fromId = GetId(path, path, nullptr);
-    long toId;
-    if (GetRedirect(fromId, &toId)) { // if redirect already in list, no need to continue searching
-        std::string toPath = GetPath(toId);
-        if (toPath.empty())
-            throw std::runtime_error("Invalid toPath: " + std::to_string(toId) + "\n");
-
-        if (redirectsTo) *redirectsTo = toPath;
-        return true;
-    }
-
-    std::string redirUrl(reinterpret_cast<const char*>(content), len);
+    std::string redirUrl = contents.substr(start + redirStr.size(), end - start - redirStr.size());
     NormalizeRedirectPath(redirUrl);
     try {
-        bool isRedirect = IsRedirect(archive, document, collection, redirUrl, redirectsTo);
+        bool isRedirect = IsRedirect(archive, redirUrl, redirectsTo);
         std::string finalPath = isRedirect ? *redirectsTo : redirUrl;
 
-        InsertRedirect(fromId, GetId(finalPath, finalPath, nullptr));
+        InsertRedirect(path, GetId(finalPath, finalPath, nullptr));
 
         if (redirectsTo) *redirectsTo = finalPath;
         return true;
@@ -211,7 +188,6 @@ void Parser::ParsePage(const zim::Archive& archive, std::string path, const zim:
     long id = GetId(path, path, &hasParsed);
 
     if (id == -1) {
-
         std::stringstream ss;
         std::cerr << "Bytes: ";
         for (unsigned char c : path) {
@@ -231,15 +207,14 @@ void Parser::ParsePage(const zim::Archive& archive, std::string path, const zim:
         ++idx;
         if (idx % 1000 == 0)
             printf("\033[33m#%s / %s, already parsed: %s\033[0m\n", Helper::PrettyPrint(idx.load()), Helper::PrettyPrint(wikiCount.load()), path.c_str());
-        //return;
+        return;
     }
 
-    std::string contents = entry.getItem().getData();
-
-    // Dont parse page and add connection if redirect
-    if (IsRedirect(archive, redirectDocument, redirectCollection, path, nullptr))
+    // Dont parse page or add connection if redirect
+    if (IsRedirect(archive, path, nullptr))
         return;
 
+    std::string contents = entry.getItem().getData();
     lxb_status_t status = lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(contents.c_str()), contents.size());
     if (status != LXB_STATUS_OK)
         printf("status is not OK: lxb_html_document_parse");
@@ -264,7 +239,7 @@ void Parser::ParsePage(const zim::Archive& archive, std::string path, const zim:
 
         std::string p = reinterpret_cast<const char*>(href);
         std::string redirPath;
-        if (IsRedirect(archive, redirectDocument, redirectCollection, p, &redirPath))
+        if (IsRedirect(archive, p, &redirPath))
             p = redirPath;
 
         long localId = GetId(p, path, nullptr);
@@ -384,7 +359,7 @@ void Parser::CleanParseFile(lxb_html_document_t* document, lxb_dom_collection_t*
 }
 
 long Parser::GetId(const std::string& path, const std::string& debugFrom, bool* hasParsed) {
-    std::lock_guard<std::mutex> lock(idMutex);
+    //std::lock_guard<std::mutex> lock(idMutex); // only reading, no writing
 
     auto it = idMap.find(path);
     if (it != idMap.end()) { // cached in map
@@ -398,7 +373,7 @@ long Parser::GetId(const std::string& path, const std::string& debugFrom, bool* 
 }
 
 std::string Parser::GetPath(const long id) {
-    std::lock_guard<std::mutex> lock(pathMutex);
+    //std::lock_guard<std::mutex> lock(pathMutex); // only reading, no writing
 
     auto it = pathMap.find(id);
     if (it != pathMap.end()) { // cached in map
@@ -446,18 +421,21 @@ void Parser::NormalizeImgSrc(std::string& path) {
     path = urlDecode(path);
 }
 
-void Parser::InsertRedirect(long from, long to) {
+void Parser::InsertRedirect(const std::string& fromPath, long toId) {
     std::lock_guard<std::mutex> lock(redirectMutex);
+
+    if (toId == -1)
+        throw std::runtime_error("toId is -1: " + fromPath + "\n");
     
-    redirectMap.insert({ from, to });
+    redirectMap.emplace(fromPath, toId);
 }
 
-bool Parser::GetRedirect(long from, long* to) {
+bool Parser::GetRedirect(const std::string& fromPath, long* toId) {
     std::lock_guard<std::mutex> lock(redirectMutex);
-    
-    auto it = redirectMap.find(from);
+
+    auto it = redirectMap.find(fromPath);
     if (it != redirectMap.end()) {
-        if (to) *to = it->second;
+        if (toId) *toId = it->second;
         return true;
     }
     return false;

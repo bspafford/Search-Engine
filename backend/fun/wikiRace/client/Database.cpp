@@ -49,7 +49,6 @@ nlohmann::json Database::GetIdAndPathFromWiki() {
             }
 
             offset += data.size();
-            break;
         }
 
         {
@@ -96,43 +95,30 @@ void Database::AddImgPath(long id, const std::string& path, const std::vector<ui
 }
 
 void Database::AddConnection(long fromId, long toId) {
-    bool done = false;
-    std::condition_variable cv;
-    std::mutex m;
-    threadPool->Enqueue([fromId, toId, &done, &m, &cv] {
+    threadPool->Enqueue([fromId, toId] {
         Database& database = Database::GetDatabase();
 
         database.contents.push_back({ { "fromId", fromId }, { "toId", toId } });
-
-        if (database.contents.size() >= 10000) {
-            // also increases authority
-            database.CurlPost("/AddConnections", database.contents);
-
-            database.contents.clear();
-
-            printf("\033[34mAdded to Database: %ld -> %ld | %ld thread size\033[0m\n", fromId, toId, threadPool->GetQueueSize());
-        }
-
-        {
-            std::lock_guard lock(m);
-            done = true;
-        }
-
-        cv.notify_one();
-        });
-
-    std::unique_lock lock(m);
-    cv.wait(lock, [&] { return done; });
+    });
 }
 
 void Database::SetHasParsed(long id, bool hasParsed) {
     threadPool->Enqueue([id, hasParsed] {
         Database& database = Database::GetDatabase();
 
+        ++database.idx;
+
         //tx.exec(pqxx::prepped("SetHasParsed"), pqxx::params(id, hasParsed));
         nlohmann::json json;
         database.CurlPost("/SetHasParsed", { { "id", id }, { "hasParsed", hasParsed } });
-        // problem, what happens at the end, should tell the program to force uplaod the data. cause if i only have like 500/1000, it wouldn't upload
+
+        // Every time has Parsed updates, add conncetions along with it
+        // also increases authority
+        database.CurlPost("/AddConnections", database.contents);
+        if (database.idx % 100 == 0) {
+            printf("\033[34mAdded to Database: %ld -> %ld | %ld thread size\033[0m\n", database.contents[0]["fromId"].get<long>(), database.contents[0]["toId"].get<long>(), threadPool->GetQueueSize());
+        }
+        database.contents.clear();
     });
 }
 

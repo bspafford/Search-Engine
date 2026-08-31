@@ -38,7 +38,10 @@ public:
     //      true: if you want to find where the redirect leads to
     //      false: just if you want to know if the path is a redirect or not
     // function will normalize path, this includes decoding (e.g.: '%23' into '#')
-    static bool IsRedirect(const zim::Archive& archive, lxb_html_document_t* document, lxb_dom_collection_t* collection, std::string& path, std::string* redirectsTo);
+    static bool IsRedirect(const zim::Archive& archive, std::string& path, std::string* redirectsTo);
+
+    // path, { id, hasParsed }
+    static inline std::unordered_map<std::string, std::pair<long, bool>> idMap;
 
 private:
     void ParsePage(const zim::Archive& archive, std::string path, const zim::Entry& entry);
@@ -64,8 +67,6 @@ private:
     static long GetId(const std::string& path, const std::string& debugFrom, bool* hasParsed);
     static std::string GetPath(const long id);
 
-    // path, { id, hasParsed }
-    static inline std::unordered_map<std::string, std::pair<long, bool>> idMap;
     // id, { path, hasParsed }
     static inline std::unordered_map<long, std::pair<std::string, bool>> pathMap;
 
@@ -77,8 +78,8 @@ private:
     static inline std::atomic<long> idx = 0;
     static inline std::atomic<long> wikiCount = 0;
 
-    static void InsertRedirect(long from, long to);
-    static bool GetRedirect(long from, long* to);
+    static void InsertRedirect(const std::string& fromPath, long toId);
+    static bool GetRedirect(const std::string& fromPath, long* toId);
     static inline std::mutex redirectMutex;
-    static inline std::unordered_map<long, long> redirectMap;
+    static inline std::unordered_map<std::string, long> redirectMap;
 };

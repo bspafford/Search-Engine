@@ -12,8 +12,6 @@
 
 void BuildWikiDB(const zim::Archive& archive);
 void BuildConnections(const zim::Archive archive);
-bool IsRedirect(const zim::Entry& entry);
-
 
 int main(int argc, char* argv[]) {
     SetConsoleOutputCP(CP_UTF8);
@@ -26,20 +24,14 @@ int main(int argc, char* argv[]) {
     }
     zim::Archive archive(zimPath);
 
-    //zim::Archive archive(zimPath);
-    //zim::Entry entry = archive.getEntryByPath("_assets_/c8f24dc75f9c782269c846c9b17e400f/Symbol_category_class.svg.png");
-    //std::cout << "entry: " << entry.getTitle() << ", path: " << entry.getPath() << "\n";
-    //return 0;
-
-    bool buildConnections = false;
+    bool buildConnections = true;
     if (!buildConnections) { // make wiki database
         Database::InitPool(10);
         BuildWikiDB(archive);
     } else { // build connections
         Model::Init();
-        Database::InitPool(10);
-        //Parser::InitPool(10);
-        Parser::InitPool(1);
+        Database::InitPool(1);
+        Parser::InitPool(10);
 
         BuildConnections(archive);
 
@@ -64,7 +56,7 @@ void BuildWikiDB(const zim::Archive& archive) {
 
     for (auto& entry : archive.iterByTitle()) {
         std::string path = entry.getPath();
-        if (Parser::IsRedirect(archive, document, collection, path, nullptr)) {
+        if (Parser::IsRedirect(archive, path, nullptr)) {
             ++redirectCount;
             if (redirectCount % 1000 == 0)
                 std::cout << "\033[33m#" << Helper::PrettyPrint(redirectCount) << ": \"" << entry.getTitle() << "\" is a redirect\033[0m\n";
@@ -83,30 +75,9 @@ void BuildConnections(const zim::Archive archive) {
     long articleCount = archive.getArticleCount();
     std::cout << "Articles: " << articleCount << "\n";
 
-    long idx = 0;
-    long redirectCount = 0;
-    for(auto& entry : archive.iterByTitle()) { // for every file in the .zim
-        if (IsRedirect(entry)) {
-            ++redirectCount;
-            //if (redirectCount % 1000 == 0) {
-                //std::cout << "\033[33m\"#" << redirectCount << ": " << entry.getTitle() << "\" is a redirect\033[0m\n";
-            //}
-            continue;
-        }
-
-        std::string path = entry.getPath();
-        // if (idx % 100 == 0 && idx % 1000 != 0)
-            // std::cout << "#" << idx << " / " << articleCount << ", path: " << path << "\n";
-
-        ++idx;
-        if (idx % 1000 == 0) { // commit every 1000
-            // std::cout << "\033[34m#" << idx << " / " << articleCount << ": " << entry.getTitle() << ", path: " << path << "\033[0m\n";
-        }
-
+    for(auto& [path, idInfo] : Parser::idMap) {
+        auto& [id, hasParsed] = idInfo;
+        zim::Entry entry = archive.getEntryByPath(path);
         Parser::Parse(archive, path, entry);
     }
-}
-
-bool IsRedirect(const zim::Entry& entry) {
-    return entry.isRedirect(); // should also correctly handle <meta http-equiv="refresh" ...> which is a redirect
 }

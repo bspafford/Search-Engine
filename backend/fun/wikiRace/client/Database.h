@@ -41,8 +41,7 @@ private:
 
     static inline ThreadPool* threadPool = nullptr;
 
-    static inline std::atomic<long> count = 0;
-    std::atomic<long> idx = 0;
+    long idx = 0;
 
     const std::string ip = "10.0.0.148:8080";
 
