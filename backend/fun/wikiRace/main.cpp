@@ -513,9 +513,10 @@ void BuildWikiDB(std::string zimPath) {
 void CreateImageFile(const std::filesystem::path& thumbnailsPath, const std::string& path, const std::vector<uint8_t>& data) {
     // save file to computer
 
-    std::ofstream img(thumbnailsPath / path, std::ios::binary);
+    std::filesystem::path imgPath(thumbnailsPath / path);
+    std::ofstream img(imgPath, std::ios::binary);
     if (!img.is_open()) {
-        printf("Failed to open path: \"%s\"\n", path.c_str());
+        printf("Failed to open path: \"%s\"\n", imgPath.c_str());
         return;
     }
 
@@ -633,7 +634,9 @@ void Server(const std::filesystem::path& thumbnailsPath) {
 
             if (isLast) {
                 nlohmann::json data = nlohmann::json::parse(body);
-                Database::SetHasParsed(data["id"].get<long>(), true);
+                for (nlohmann::json& d : data) {
+                    Database::SetHasParsed(d["id"].get<long>(), true);
+                }
 
                 res->end();
             }
