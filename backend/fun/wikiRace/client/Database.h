@@ -10,7 +10,7 @@ class ThreadPool;
 
 class Database {
 public:
-    static void InitPool(int threads);
+    static void InitPool(int threads, size_t maxActiveTasks);
     void Init();
 
     static Database& GetDatabase() {
@@ -47,5 +47,6 @@ private:
 
     CURL* curl = nullptr;
 
-    nlohmann::json contents;
+    nlohmann::json connections;
+    nlohmann::json parsedSites;
 };

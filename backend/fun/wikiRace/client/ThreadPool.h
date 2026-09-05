@@ -8,7 +8,8 @@
 
 class ThreadPool {
 public:
-    ThreadPool(size_t threadsNum);
+    // maxActiveTasks can == 0 for uncapped
+    ThreadPool(size_t threadsNum, size_t maxActiveTasks);
     ~ThreadPool();
 
     void Enqueue(std::function<void()> task);
@@ -22,6 +23,8 @@ private:
     std::mutex queueMutex;
     std::queue<std::function<void()>> tasks;
     std::condition_variable cv;
+    std::condition_variable activeTasksCv;
+    size_t maxActiveTasks = 1000;
 
     bool stop = false;
 

@@ -9,8 +9,8 @@ size_t write_data(char* contents, size_t size, size_t nmemb, void* userp) {
     return size * nmemb;
 }
 
-void Database::InitPool(int threads) {
-    threadPool = new ThreadPool(threads);
+void Database::InitPool(int threads, size_t maxActiveTasks) {
+    threadPool = new ThreadPool(threads, maxActiveTasks);
 }
 
 void Database::Init() {
@@ -98,7 +98,7 @@ void Database::AddConnection(long fromId, long toId) {
     threadPool->Enqueue([fromId, toId] {
         Database& database = Database::GetDatabase();
 
-        database.contents.push_back({ { "fromId", fromId }, { "toId", toId } });
+        database.connections.push_back({ { "fromId", fromId }, { "toId", toId } });
     });
 }
 
@@ -108,17 +108,19 @@ void Database::SetHasParsed(long id, bool hasParsed) {
 
         ++database.idx;
 
-        //tx.exec(pqxx::prepped("SetHasParsed"), pqxx::params(id, hasParsed));
-        nlohmann::json json;
-        database.CurlPost("/SetHasParsed", { { "id", id }, { "hasParsed", hasParsed } });
+        database.parsedSites.push_back({ { "id", id }, { "hasParsed", hasParsed } });
 
         // Every time has Parsed updates, add conncetions along with it
         // also increases authority
-        database.CurlPost("/AddConnections", database.contents);
-        if (database.idx % 100 == 0) {
-            printf("\033[34mAdded to Database: %ld -> %ld | %ld thread size\033[0m\n", database.contents[0]["fromId"].get<long>(), database.contents[0]["toId"].get<long>(), threadPool->GetQueueSize());
+        // update every 100 times, or when the thread queue is on its last one
+        if ((threadPool->GetQueueSize() == 1 || database.idx % 100 == 0) && database.connections.size()) {
+            database.CurlPost("/AddConnections", database.connections);
+            database.CurlPost("/SetHasParsed", database.parsedSites);
+            
+            printf("\033[34mAdded to Database: %ld -> %ld | %ld thread size\033[0m\n", database.connections[0]["fromId"].get<long>(), database.connections[0]["toId"].get<long>(), threadPool->GetQueueSize());
+            database.connections.clear();
+            database.parsedSites.clear();
         }
-        database.contents.clear();
     });
 }
 

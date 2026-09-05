@@ -26,12 +26,12 @@ int main(int argc, char* argv[]) {
 
     bool buildConnections = true;
     if (!buildConnections) { // make wiki database
-        Database::InitPool(10);
+        Database::InitPool(10, 10000);
         BuildWikiDB(archive);
     } else { // build connections
         Model::Init();
-        Database::InitPool(1);
-        Parser::InitPool(10);
+        Database::InitPool(1, 10000);
+        Parser::InitPool(10, 0);
 
         BuildConnections(archive);
 

@@ -1,7 +1,9 @@
 #include "ThreadPool.h"
 #include <stdexcept>
 
-ThreadPool::ThreadPool(size_t threadsNum) {
+ThreadPool::ThreadPool(size_t threadsNum, size_t maxActiveTasks) {
+    this->maxActiveTasks = maxActiveTasks;
+
     // Create worker threads
     for (size_t i = 0; i < threadsNum; ++i) {
         threads.emplace_back([this] {
@@ -45,12 +47,12 @@ ThreadPool::~ThreadPool() {
 }
 
 void ThreadPool::Enqueue(std::function<void()> task) {
-    {
-        std::unique_lock<std::mutex> lock(queueMutex);
-        tasks.emplace(std::move(task));
-        ThreadPool::activeTasks.fetch_add(1);
-    }
+    std::unique_lock<std::mutex> lock(queueMutex);
 
+    ThreadPool::activeTasks.fetch_add(1);
+    tasks.emplace(std::move(task));
+
+    lock.unlock();
     cv.notify_one();
 }
 

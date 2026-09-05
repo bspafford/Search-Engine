@@ -16,7 +16,7 @@ class ThreadPool;
 
 class Parser {
 public:
-    static void InitPool(int threads);
+    static void InitPool(int threads, size_t maxActiveTasks);
     void Init();
     ~Parser();
 
@@ -38,7 +38,7 @@ public:
     //      true: if you want to find where the redirect leads to
     //      false: just if you want to know if the path is a redirect or not
     // function will normalize path, this includes decoding (e.g.: '%23' into '#')
-    static bool IsRedirect(const zim::Archive& archive, std::string& path, std::string* redirectsTo);
+    static bool IsRedirect(const zim::Archive& archive, std::string& path, std::string* redirectsTo, int maxDepth = 10);
 
     // path, { id, hasParsed }
     static inline std::unordered_map<std::string, std::pair<long, bool>> idMap;

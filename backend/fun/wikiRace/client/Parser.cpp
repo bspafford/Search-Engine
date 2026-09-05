@@ -10,8 +10,8 @@
 #include <zim/item.h>
 #include <sstream>
 
-void Parser::InitPool(int threads) {
-    threadPool = new ThreadPool(threads);
+void Parser::InitPool(int threads, size_t maxActiveTasks) {
+    threadPool = new ThreadPool(threads, maxActiveTasks);
 
     nlohmann::json data = Database::GetIdAndPathFromWiki();
     idMap.reserve(data.size());
@@ -102,11 +102,16 @@ void Parser::NormalizeRedirectPath(std::string& path) {
         path.erase(pos);
 }
 
-bool Parser::IsRedirect(const zim::Archive& archive, std::string& path, std::string* redirectsTo) {
+bool Parser::IsRedirect(const zim::Archive& archive, std::string& path, std::string* redirectsTo, int maxDepth) {
     // see if has meta tag in head, see if has http-equiv, see if it = "refresh", parse the content
     // recurse until find final, or value in map
     // add all sites to redirect map
     // Find all <a> elements
+
+    if (maxDepth == 0) {
+        if (redirectsTo) *redirectsTo = "";
+        return false;
+    }
 
     NormalizeImgSrc(path); // removes './' and decodes
     NormalizeRedirectPath(path); // removes '#' and after
@@ -164,18 +169,21 @@ bool Parser::IsRedirect(const zim::Archive& archive, std::string& path, std::str
 
     std::string redirUrl = contents.substr(start + redirStr.size(), end - start - redirStr.size());
     NormalizeRedirectPath(redirUrl);
-    try {
-        bool isRedirect = IsRedirect(archive, redirUrl, redirectsTo);
+    //try {
+        bool isRedirect = IsRedirect(archive, redirUrl, redirectsTo, maxDepth - 1);
         std::string finalPath = isRedirect ? *redirectsTo : redirUrl;
 
-        InsertRedirect(path, GetId(finalPath, finalPath, nullptr));
+        long id = GetId(finalPath, finalPath, nullptr);
+        InsertRedirect(path, id);
+        if (id == -1)
+            finalPath = "";
 
         if (redirectsTo) *redirectsTo = finalPath;
         return true;
-    } catch (const std::exception& e) {
-        printf("Unabled to find redirUrl: \"%s\"\n", redirUrl.c_str());
-        throw std::runtime_error(e.what());
-    }
+    //} catch (const std::exception& e) {
+        //printf("Unabled to find redirUrl: \"%s\"\n", redirUrl.c_str());
+        //throw std::runtime_error(e.what());
+    //}
 }
 
 void Parser::ParsePage(const zim::Archive& archive, std::string path, const zim::Entry& entry) {
@@ -238,6 +246,9 @@ void Parser::ParsePage(const zim::Archive& archive, std::string path, const zim:
         }
 
         std::string p = reinterpret_cast<const char*>(href);
+        NormalizeImgSrc(p); // removes './' and decodes
+        NormalizeRedirectPath(p); // removes '#' and after
+
         std::string redirPath;
         if (IsRedirect(archive, p, &redirPath))
             p = redirPath;
@@ -425,7 +436,7 @@ void Parser::InsertRedirect(const std::string& fromPath, long toId) {
     std::lock_guard<std::mutex> lock(redirectMutex);
 
     if (toId == -1)
-        throw std::runtime_error("toId is -1: " + fromPath + "\n");
+        return;
     
     redirectMap.emplace(fromPath, toId);
 }
